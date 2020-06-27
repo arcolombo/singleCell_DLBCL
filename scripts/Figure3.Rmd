@@ -1,0 +1,1215 @@
+---
+title: "Imaging mass cytometry reveals tumor and immune spatial and phenotypic clusters associated with clinical outcomes in diffuse large B cell lymphoma (DLBCL)"
+author: "Anthony Colombo+,Monirath Hav+, Erik Gerdtsson"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+# {.tabset}  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup {.tabset}
+
+### Helper Functions
+```{r, eval=FALSE}
+
+ randomSampleUniqueLabel<-function(which.ROIID=NULL,N=NULL,full.dn4=NULL){
+   dat<-subset(full.dn4,ROIID==which.ROIID)
+   ids<-sample(dat$uniqueLabel,N,replace=FALSE) 
+  return(ids)
+ }
+
+
+ subCommunityAbundanceBarPlot<-function(full.dn4=NULL){
+   tums<-full.dn4[which(full.dn4$treatment.status!="ND"& full.dn4$immune.status!="immune"),]
+   tumor.abund<-as.data.frame.matrix(table(tums$ROIID,tums$unsup.subcommunity))
+    tumor.abund<-tumor.abund[,grepl("Tumor_",colnames(tumor.abund))]
+     ##direct standardization
+  ### average cluster size
+  ## average patient tumors per cluster 946.23 tumors per cluster
+  # cohort.avg<- mean(rowSums(tumor.abund)) 
+  tumor.abund<-100*(tumor.abund/(rowSums(tumor.abund)))
+  tumor.abund$response<-full.dn4$response[match(rownames(tumor.abund),full.dn4$ROIID)]
+  tumor.abund<-tumor.abund[which(tumor.abund$response!="LTF"),]
+  tumor.means<-tumor.abund%>%group_by(response)%>%summarise_all(funs(mean))%>%data.frame
+  rownames(tumor.means)<-tumor.means[,1]
+  tumor.means<-tumor.means[,-1]
+  tumor.means<-t(tumor.means)
+  tumor.means<-data.frame(means=c(tumor.means[,1],tumor.means[,2]),response=c(rep(colnames(tumor.means)[1],nrow(tumor.means)),rep(colnames(tumor.means)[2],nrow(tumor.means))),names=rep(rownames(tumor.means,2)))
+
+  tumor.sd<-tumor.abund%>%group_by(response)%>%summarise_all(funs(sd))%>%data.frame
+  tumor.se<-tumor.sd[,-1]/sqrt(nrow(tumor.abund))
+  tumor.se<-t(tumor.se)
+   tumor.means$se<-c(tumor.se[,1],tumor.se[,2])
+   tumor.means$response<-gsub("Primary refract","Primary refractory",tumor.means$response)
+  tumor.means$names<-factor(tumor.means$names,levels=unique(tumor.means$names[order(nchar(tumor.means$names))]))
+ ## need to plot all the tumor proportions CR vs. REF
+    tumor.exp<-ggplot(tumor.means,aes(x=names,y=means,fill=response))+geom_bar(stat='identity',position=position_dodge())+geom_errorbar(aes(ymin=abs(means-2*se), ymax=means+2*se), width=.2,
+                 position=position_dodge(.9))+theme_bw(base_size=14)+ theme(axis.text.x = element_text(angle = 45, hjust = 1))+ylab("Tumor proportion (%)")+xlab("tumor communities")+scale_fill_manual(values=c("darkslateblue","firebrick2"))
+  tumor.exp 
+  savePlot(file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure2-subType-revisions/abundance-barplots-all-subcommunities/abundance-barplot-revised/Tumor.subcommunities.response.tumorProportions.png")
+
+
+ computeImmuneProportions<-function(full.dn4=NULL,primary=NULL){
+  require(gridExtra)
+  tums<-full.dn4[which(full.dn4$treatment.status!="ND"& full.dn4$immune.status=="immune"),]
+  tumor.abund<-as.data.frame.matrix(table(tums$ROIID,tums$unsup.subcommunity))
+  ## immune proportions
+  tumor.abund<-100*(tumor.abund/(rowSums(tumor.abund)))
+  tumor.abund<-tumor.abund[,grepl(paste0(primary,"_"),colnames(tumor.abund))]
+  tumor.abund$response<-full.dn4$response[match(rownames(tumor.abund),full.dn4$ROIID)]
+  tumor.abund<-tumor.abund[which(tumor.abund$response!="LTF"),]
+  tumor.means<-tumor.abund%>%group_by(response)%>%summarise_all(funs(mean))%>%data.frame
+  rownames(tumor.means)<-tumor.means[,1]
+  tumor.means<-tumor.means[,-1]
+  tumor.means<-t(tumor.means)
+  tumor.means<-data.frame(means=c(tumor.means[,1],tumor.means[,2]),response=c(rep(colnames(tumor.means)[1],nrow(tumor.means)),rep(colnames(tumor.means)[2],nrow(tumor.means))),names=rep(rownames(tumor.means,2)))
+
+  tumor.sd<-tumor.abund%>%group_by(response)%>%summarise_all(funs(sd))%>%data.frame
+  tumor.se<-tumor.sd[,-1]/sqrt(nrow(tumor.abund))
+   tumor.se<-t(tumor.se)
+   tumor.means$se<-c(tumor.se[,1],tumor.se[,2])
+   tumor.means$response<-gsub("Primary refract","Primary refractory",tumor.means$response)
+  tumor.means$names<-factor(tumor.means$names,levels=unique(tumor.means$names[order(nchar(as.character(tumor.means$names)))]))
+ ## need to plot all the tumor proportions CR vs. REF
+  return(tumor.means)
+ }
+
+ ## add the immune populations.
+  ## MAC, TREG, CD4, CD8.
+   cd4.prop<-computeImmuneProportions(full.dn4,primary="CD4")
+   cd4s<-colorRampPalette(c("lightsteelblue1","blue"),10)
+    cd4.exp<-ggplot(cd4.prop,aes(x=names,y=means,fill=response))+geom_bar(stat='identity',position=position_dodge())+geom_errorbar(aes(ymin=abs(means-1.95*se), ymax=means+1.95*se), width=.2,
+                 position=position_dodge(.9))+theme_bw(base_size=14)+ theme(axis.text.x = element_text(angle = 45, hjust = 1))+ylab("CD4 proportion (%)")+xlab("CD4 communities")+scale_fill_manual(values=c("darkslateblue","firebrick2"))
+  cd4.exp
+
+  ## CD8
+ cd8.prop<-computeImmuneProportions(full.dn4,primary="CD8")
+   cd8s<-colorRampPalette(c("darkseagreen","green"),10)
+    cd8.exp<-ggplot(cd8.prop,aes(x=names,y=means,fill=response))+geom_bar(stat='identity',position=position_dodge())+geom_errorbar(aes(ymin=abs(means-1.95*se), ymax=means+2*se), width=.2,
+                 position=position_dodge(.9))+theme_bw(base_size=14)+ theme(axis.text.x = element_text(angle = 45, hjust = 1))+ylab("CD8 proportion (%)")+xlab("CD8 communities")+scale_fill_manual(values=c("darkslateblue","firebrick2"))
+  cd8.exp
+
+ ## mac
+  mac.prop<-computeImmuneProportions(full.dn4,primary="Macrophage")
+  macs<-colorRampPalette(c("magenta","maroon4"),10)
+  mac.exp<-ggplot(mac.prop,aes(x=names,y=means,fill=response))+geom_bar(stat='identity',position=position_dodge())+geom_errorbar(aes(ymin=abs(means-1.95*se), ymax=means+1.95*se), width=.2,
+                 position=position_dodge(.9))+theme_bw(base_size=14)+ theme(axis.text.x = element_text(angle = 45, hjust = 1))+ylab("Macrophage proportion (%)")+xlab("Macrophage communities")+scale_fill_manual(values=c("darkslateblue","firebrick2"))
+  mac.exp
+
+ # treg
+  reg.prop<-computeImmuneProportions(full.dn4,primary="TREG")
+    tregs<-colorRampPalette(c("plum2","purple"),10)
+  reg.exp<-ggplot(reg.prop,aes(x=names,y=means,fill=response))+geom_bar(stat='identity',position=position_dodge())+geom_errorbar(aes(ymin=abs(means-1.95*se), ymax=means+2*se), width=.2,
+                 position=position_dodge(.9))+theme_bw(base_size=14)+ theme(axis.text.x = element_text(angle = 45, hjust = 1))+ylab("TREG proportion (%)")+xlab("TREG communities")+scale_fill_manual(values=c("darkslateblue","firebrick2"))
+
+ ### immune proportions
+  grid.arrange(cd4.exp,cd8.exp,mac.exp,reg.exp,tumor.exp,nrow=3,ncol=2)  
+  savePlot(file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure2-subType-revisions/abundance-barplots-all-subcommunities/abundance-barplot-revised/immune.proportions.png")
+
+ 
+
+ 
+
+
+ ##Monirath wanted all of the phenotypes on the same scale.
+   x<-rbind(tumor.means,
+		cd4.prop,
+		cd8.prop,
+		mac.prop,
+		reg.prop)
+  phenoColors<-getPhenoColors(full.dn4)
+   x.exp<-ggplot(x,aes(x=names,y=means,fill=response))+geom_bar(stat='identity',position=position_dodge())+geom_errorbar(aes(ymin=abs(means-2*se), ymax=means+2*se), width=.2,
+                 position=position_dodge(.9))+theme_bw(base_size=14)+ theme(axis.text.x = element_text(angle = 45, hjust = 1,colour=phenoColors[match(unique(as.character(x$names)),names(phenoColors))]))+ylab("proportion (%)")+xlab("communities")+scale_fill_manual(values=c("darkslateblue","firebrick2"))
+  ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure2-subType-revisions/abundance-barplots-all-subcommunities/abundance-barplot-revised/subCommunity.proportions.together.png")
+
+}
+
+zScorePatientExpression
+function(full.dn4=NULL,markers=NULL,ROIID.column=NULL){
+  X3<-full.dn4[,c(markers,ROIID.column)]%>%group_by(ROIID)%>%summarise_all(funs(sd))%>%data.frame
+  X2<-full.dn4[,c(markers,ROIID.column)]%>%group_by(ROIID)%>%summarise_all(funs(mean))%>%data.frame
+   ###
+   z<-full.dn4
+  for(cl in unique(full.dn4$ROIID)){
+   for(mark in colnames(X2)[-1]){
+  z[which(z$ROIID==cl),which(colnames(z)==mark)]<- ( z[which(z$ROIID==cl),which(colnames(z)==mark)]-X2[which(X2$ROIID==cl),which(colnames(X2)==mark)])/(X3[which(X3$ROIID==cl),which(colnames(X3)==mark)])
+   }
+ }
+ return(z)
+ }
+
+
+
+mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6","CD79B","SGK1","MYD88","MYC","NOTCH1","NOTCH2","EZH2","CREBBP"),full.dn4=NULL){
+ ## the mutation of MYD88 is specifically controlled for L265P region.
+ ## the column header for the non-syn SNP annotation for MYD88 is AA.Mutation.Cosmic_v70
+
+   mutations<-read.csv("~/Documents/imageAnalysis/DLBCL/monirath/myData/mutational-genomic-table/TMA CGI genomic data.csv")
+   colnames(mutations)<-gsub("USC076","USC76",colnames(mutations))
+  #  clinic<-read.csv("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-mutation-analysis/patient.clinical.table.csv",header=T)
+     library(XLConnect) 
+   wb<-XLConnect::loadWorkbook("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-mutation-analysis/clinicalDataRevisedFinal_final.xlsx")
+   clinic <- readWorksheet(wb, 1);  
+  clinic$MB<-gsub(" ","",clinic$End..MB)
+ mut.tag<-colnames(mutations)[9:67]
+  mutt<-data.frame(mut.tag,id=sapply(strsplit(gsub("\\.","_",mut.tag),"_"),function(x) x[1])
+) 
+
+  mutt$id[which(mutt[,"id"]=="USC076")]<-"USC76"
+  tag<- as.character(clinic[,"MB"])
+  tag<-gsub(" ","",tag)
+  tag<-data.frame(tag=tag,stringsAsFactors=FALSE)
+  inters<-intersect(tag[,1],mutt$id)
+   key<-data.frame(MB=tag[match(inters,tag[,1]),],stringsAsFactors=FALSE)
+  key$id<-mutt[match(inters,mutt[,2]),1]
+ ##fix a column header
+ ## USC76 has a funcy header.
+ ##
+  casemuts<-mutations[,match(key$id,colnames(mutations))]
+  casemuts$gene.name<-mutations[,"gene_name..Homo_sapiens_ensembl_v74_mRNA."]
+  casemuts$chromosome<-as.character(mutations$Chromosome)
+ casemuts$aminoAcid<-as.character(mutations$AA.Mutation.Cosmic_v70)
+ casemuts$aminoAcid<-gsub( "\"","",mutations$AA.Mutation.Cosmic_v70)
+  casemuts$gene.name<-as.character(casemuts$gene.name)
+ ##for MYD88, the gene name will have the aminoAcid appended.
+  casemuts$gene.name[which(casemuts$gene.name=="MYD88" & casemuts$aminoAcid=="L265P, L265P")]<-"MYD88.L265P"
+  casemuts<-casemuts[which(casemuts$aminoAcid!="S219C, S219C, S219C, S219C" & casemuts$aminoAcid!="M232T, M232T" & casemuts$aminoAcid!="0.999, 0.999" & casemuts$aminoAcid!="S251N, S243N, S251N, S243N"),]
+  casemuts[which(casemuts$gene.name=="MYD88" & casemuts$chromosome==""),"gene.name"]<-"MYD88.L265P"
+ casemuts[which(casemuts$gene.name=="MYD88.L265P" & casemuts$chromosome==""),1:20]<-ifelse(casemuts[which(casemuts$gene.name=="MYD88.L265P" & casemuts$chromosome!=""),1:20]!=0,1,0)
+  casem<- casemuts[which(casemuts$chromosome==""),]
+ mutationsToGather[which(mutationsToGather=="MYD88")]<-"MYD88.L265P"
+  dat<-casem[casem$gene.name%in%mutationsToGather,]
+   ### 
+   for(i in mutationsToGather){
+  key[,i]<-0
+ key[match(colnames(dat)[which(dat[dat$gene.name==i,]==1)],key$id),i]<-1
+   }
+  write.csv(key,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-mutation-analysis/Mutational.CNV.categorical.table.csv")
+  ## append to the clinical sheet
+  clinic2<-clinic[,!colnames(clinic)%in%mutationsToGather]
+ clinic2<-left_join(clinic2,key[,c("MB",mutationsToGather)],by="MB")
+  for(i in mutationsToGather){
+  clinic2[which(is.na(clinic2[,i])), i]<-0
+  }
+ ##add the factor to control for replicates
+  replicate<-model.matrix(~0+clinic2$MB)
+  replicate<-replicate[,which(colSums(replicate)>1)]  
+ colnames(replicate)<-substring(colnames(replicate),11)
+  clinic2<-data.frame(clinic2,replicate)
+ clinic2$WES.avail<-FALSE
+  clinic2$WES.avail[match(key$MB,clinic2$MB)]<-TRUE
+ clinic2$Case_ID<-paste0("Case_",clinic2$Col1)
+  return(clinic2)
+
+}
+
+
+
+```
+
+
+### tSNE comparison of REF vs CR
+
+```{r, eval=FALSE}
+
+  load("~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.filtered.RData")
+
+  library(circlize)
+  ### plot a tSNE of these populations.
+  cd8s<-colorRampPalette(c("darkseagreen","green"),10)
+  cd4s<-colorRampPalette(c("lightsteelblue1","blue"),10)
+  macs<-colorRampPalette(c("magenta","maroon4"),10)
+   tregs<-colorRampPalette(c("plum2","purple"),10)
+   tumrs<-colorRampPalette(c("grey24","grey64"),10)
+ 
+
+  phenoColors<-c(cd4s(7),
+	cd8s(7),"red",macs(6),tregs(6),tumrs(10))
+  phenoColors<-getPhenoColors(full.dn4)
+ ### manual color change
+  phenoColors["Macrophage_2"]<-"darkblue"
+  phenoColors["Macrophage_5"]<-"yellow"
+  phenoColors["CD8_7"]<-"black"
+
+
+
+  
+
+ ### make a tsne with the same number of cells in CR vs. REF.
+  ## lineage and induc markers include morphology. 
+  expr<-full.dn4[,c(lineage_markers,induc,"response","treatment.status","uniqueLabel","ROIID")]
+  expr<-expr[which(expr$treatment.status!="ND"),]
+  expr.ref<-expr[which(expr$response=="Primary refract"),]
+  expr.cr<-expr[which(expr$response=="CR"),]
+  labels<-expr[,"uniqueLabel"]
+
+   ##new way of sampling.
+  tsne_inds<-sapply(unique(expr.cr$ROIID),function(x) randomSampleUniqueLabel(which.ROIID=x,N=1250,full.dn4=expr.cr))
+   tsne_inds<-as.vector(tsne_inds)
+  ## refractory samples
+  tsne_inds_ref<-sapply(unique(expr.ref$ROIID),function(x) randomSampleUniqueLabel(which.ROIID=x,N=4532,full.dn4=expr.ref))
+  tsne_inds_ref<-as.vector(tsne_inds_ref)
+  randomSamps<-c(tsne_inds,tsne_inds_ref)
+
+  tsne_expr <- expr[match(randomSamps,expr$uniqueLabel), c(lineage_markers,induc)]
+ library(Rtsne)
+ set.seed(1234)
+  tsne_out <- Rtsne(tsne_expr,theta=0.15, check_duplicates = FALSE, pca =TRUE)
+
+
+  dr <- data.frame(tSNE1 = tsne_out$Y[, 1], tSNE2 = tsne_out$Y[, 2], 
+  expr[match(randomSamps,expr$uniqueLabel), lineage_markers])
+  
+   tsne_ids<-match(randomSamps,expr$uniqueLabel)
+   dr$sample_id <- expr$ROIID[tsne_ids]
+   dr$uniqueLabel<-randomSamps
+  stopifnot(all(expr$uniqueLabel[tsne_ids]==dr$uniqueLabel))
+
+   dr$cell_clustering1 <- factor(full.dn4[match(dr$uniqueLabel,full.dn4$uniqueLabel),"unsup.subcommunity"])
+ ## append to main data.
+  full.dn4$tSNE1<-full.dn4$tSNE2<-NA
+  full.dn4$tSNE1[match(dr$uniqueLabel,full.dn4$uniqueLabel)]<-dr$tSNE1
+   full.dn4$tSNE2[match(dr$uniqueLabel,full.dn4$uniqueLabel)]<-dr$tSNE2
+
+
+  full.dn4$unsup.subcommunity<-factor(full.dn4$unsup.subcommunity,
+	levels=c(paste0("CD4_",seq(1,7)),paste0("CD8_",seq(1,7)),paste0("Macrophage_",seq(1,6)),paste0("TREG_",seq(1,6)),paste0("Tumor_",seq(1,10)),"Endothelial"))
+
+
+ ## use the full.dn4 saved tSNE data.
+  tsn<-full.dn4[which(!is.na(full.dn4$tSNE1) & !is.na(full.dn4$tSNE2)),c("tSNE1",
+	"tSNE2",
+	"Cell_CD20",
+	"Cell_CD3",
+	"Cell_CD4",
+	"Cell_CD31",
+	"Cell_CD4",
+	"Cell_CD68",
+	"Cell_CD8",
+	"Cell_FOXP3",
+	"Cell_BCL2",
+	"uniqueLabel","response","ROIID",
+	"unsup.subcommunity")]
+  ##balanced response representation.
+  print( table(tsn$response))
+
+
+  tsn$primary.phenotype<-(tsn$unsup.subcommunity)
+   ### global tsne plotting.
+ full<-ggplot(tsn,  aes(x = tSNE1, y = tSNE2, color = primary.phenotype)) +
+  geom_point(size = 0.8) +
+  theme_bw() +
+  scale_color_manual(values = phenoColors) +
+  guides(color = guide_legend(override.aes = list(size = 4), ncol = 2))
+  full
+
+ 
+ ## add the labels to the tsne.
+  data=tsn[which(tsn$response=="CR"),]
+ 
+ ### adding labels to tSNE plot
+  ##example 
+  library(dplyr)
+   library(ggplot2)
+   library(ggrepel)
+   set.seed(1)
+ 
+###################
+###################
+   data$primary.phenotype<-factor(data$primary.phenotype)
+   data=tsn[which(tsn$response=="CR"),c("tSNE1","tSNE2","primary.phenotype")]
+   data$primary.phenotype<-factor(data$primary.phenotype)
+   data.df<- data.frame(primary.phenotype=levels(data$primary.phenotype),label=paste0(levels(data$primary.phenotype)))
+   data.df_2 <- data %>% 
+  group_by(primary.phenotype) %>%summarise(tSNE1 = mean(tSNE1), tSNE2 = mean(tSNE2)) %>% 
+  left_join(data.df)%>%data.frame
+  data.df_2<-data.df_2[data.df_2$primary.phenotype%in%c("Tumor_2","Tumor_6","CD4_7","CD4_1","Macrophage_5","Macrophage_2","CD8_7"),]
+
+ phenoColors2<- getPhenoColors(full.dn4)
+
+  cr<-ggplot(data,  aes(x = tSNE1, y = tSNE2, color = primary.phenotype)) +
+  geom_point(size = 0.8) +
+  theme_bw() +
+  scale_color_manual(values = phenoColors) +ggtitle("CR")+
+  guides(color = guide_legend(override.aes = list(size = 4), ncol = 2))
+ # cr<-cr+geom_label_repel(data=data.df_2,aes(label=label),family="Arial",size=5,show.legend=FALSE)
+  ### fix the labeling, the legend needs help.
+
+ ######## do the same for refractory.
+
+
+
+ ### then summarize the slide deck for Figure 2.
+    data=tsn[which(tsn$response=="Primary Refract"),]
+  data$primary.phenotype<-factor(data$primary.phenotype)
+   data=tsn[which(tsn$response=="CR"),c("tSNE1","tSNE2","primary.phenotype")]
+   data$primary.phenotype<-factor(data$primary.phenotype)
+   data.df<- data.frame(primary.phenotype=levels(data$primary.phenotype),label=paste0(levels(data$primary.phenotype)))
+   data.df_2 <- data %>% 
+  group_by(primary.phenotype) %>%summarise(tSNE1 = mean(tSNE1), tSNE2 = mean(tSNE2)) %>% 
+  left_join(data.df)%>%data.frame
+  data.df_2<-data.df_2[data.df_2$primary.phenotype%in%c("Tumor_2","Tumor_6","CD4_7","CD4_1","Macrophage_5","Macrophage_2","CD8_7"),]
+  data.df_2[which(data.df_2$primary.phenotype=="Macrophage_2"),"tSNE1"]<-(-12)
+ data.df_2[which(data.df_2$primary.phenotype=="Tumor_6"),"tSNE1"]<-12
+
+ 
+  ref<-ggplot(tsn[which(tsn$response=="Primary refract"),],  aes(x = tSNE1, y = tSNE2, color = primary.phenotype)) +
+  geom_point(size = 0.8) +
+  theme_bw() +
+  scale_color_manual(values = phenoColors) +ggtitle("REF")+
+  guides(color = guide_legend(override.aes = list(size = 4), ncol = 2))
+  #ref<- ref<-ref+geom_label_repel(data = data.df_2,min.segment.length =unit(2, "lines"), aes(label = label),family="Arial",size=5,show.legend=FALSE)
+  require(gridExtra)
+ grid.arrange(cr,ref,nrow=1,ncol=2)
+
+
+
+```
+
+### Proportions across CR and REF
+
+```{r,eval=FALSE}
+
+	### immune.proportions
+   subCommunityAbundanceBarPlot(full.dn4)
+
+ ## the immune proportions perform T-testing on the selected populations.	
+  tums<-full.dn4[which(full.dn4$treatment.status!="ND"& full.dn4$immune.status!="immune"),]
+   tumor.abund<-as.data.frame.matrix(table(tums$ROIID,tums$unsup.subcommunity))
+    tumor.abund<-tumor.abund[,grepl("Tumor_",colnames(tumor.abund))]
+     ##direct standardization
+  ### average cluster size
+  ## average patient tumors per cluster 946.23 tumors per cluster
+  # cohort.avg<- mean(rowSums(tumor.abund)) 
+  tumor.abund<-100*(tumor.abund/(rowSums(tumor.abund)))
+  tumor.abund$response<-full.dn4$response[match(rownames(tumor.abund),full.dn4$ROIID)]
+  tumor.abund<-tumor.abund[which(tumor.abund$response!="LTF"),]
+ 	
+	tum2.abund.fit<- lm(Tumor_2~response,tumor.abund)
+	tum2.p<-tum2.abund.fit%>%summary%>%coef%>%data.frame
+
+	tum6.abund.fit<- lm(Tumor_6~response,tumor.abund)
+ 	tum6.p<-tum6.abund.fit%>%summary%>%coef%>%data.frame
+
+ 	### IMMUNE t-testing.
+	 imms<-full.dn4[which(full.dn4$treatment.status!="ND"& full.dn4$immune.status=="immune"),]
+   imm.abund<-as.data.frame.matrix(table(imms$ROIID,imms$unsup.subcommunity))
+    imm.abund<-imm.abund[,which(!grepl("Tumor_",colnames(imm.abund)) &!grepl("Endothelial",colnames(imm.abund))) ]
+    imm.abund<-100*(imm.abund/(rowSums(imm.abund)))
+  imm.abund$response<-full.dn4$response[match(rownames(imm.abund),full.dn4$ROIID)]
+  imm.abund<-imm.abund[which(imm.abund$response!="LTF"),]
+	### SLR for TME.
+	cd41.abund.fit<- lm(CD4_1~response,imm.abund)
+	cd41.p<-cd41.abund.fit%>%summary%>%coef%>%data.frame
+
+	cd47.abund.fit<- lm(CD4_7~response,imm.abund)
+ 	cd47.p<-cd47.abund.fit%>%summary%>%coef%>%data.frame
+
+	### MAC SLR
+	m2.abund.fit<- lm(Macrophage_2~response,imm.abund)
+	m2.p<-m2.abund.fit%>%summary%>%coef%>%data.frame
+
+	m5.abund.fit<- lm(Macrophage_5~response,imm.abund)
+ 	m5.p<-m5.abund.fit%>%summary%>%coef%>%data.frame
+	
+ 	cd87.abund.fit<- lm(CD8_7~response,imm.abund)
+	cd87.p<-cd87.abund.fit%>%summary%>%coef%>%data.frame
+	
+	#
+	cd84.abund.fit<- lm(CD8_4~response,imm.abund)
+	cd84.p<-cd84.abund.fit%>%summary%>%coef%>%data.frame
+
+	### end of proportion t-testing.
+
+	### make data frame
+	confInt<-data.frame(c(coef(tum2.abund.fit)[2],confint(tum2.abund.fit)[2,],tum2.p[2,4]),
+	c(coef(tum6.abund.fit)[2],confint(tum6.abund.fit)[2,],tum6.p[2,4]),
+	c(coef(cd41.abund.fit)[2],confint(cd41.abund.fit)[2,],cd41.p[2,4]),
+	c(coef(cd47.abund.fit)[2],confint(cd47.abund.fit)[2,],cd47.p[2,4]),
+	c(coef(m2.abund.fit)[2],confint(m2.abund.fit)[2,],m2.p[2,4]),
+	c(coef(m5.abund.fit)[2],confint(m5.abund.fit)[2,],m5.p[2,4]),
+	c(coef(cd84.abund.fit)[2],confint(cd84.abund.fit)[2,],cd84.p[2,4]),
+	c(coef(cd87.abund.fit)[2],confint(cd87.abund.fit)[2,],cd87.p[2,4]))
+	colnames(confInt)<-c('Tumor_2','Tumor_6','CD4_1','CD4_7','MAC_2','MAC_5','CD8_4','CD8_7')
+	rownames(confInt)<-c("Primary.Refract","2.5%","97.5%","p.value")
+
+	
+	### proportion REF/CR enrichment
+	writeData(fig2,'linear.model.estimates',
+	confInt,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=265)
+	### printing the tumor PDL1 information 
+	
+	 openxlsx::saveWorkbook(fig2,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure3-tables-figures-4-28/Figure3.B.tableData-FINAL.xlsx",overwrite=TRUE)
+
+
+ #### 
+    zz<- zScorePatientExpression(full.dn4=full.dn4,markers=c(1:31,104:111),ROIID.column=32)
+ ### calculate any expression differences across sub-clusters and treatment response.
+ ###   
+  subExpr<-zz%>%group_by(ROIID,unsup.subcommunity)%>%summarise(CXCR3=mean(Cell_CXCR3),
+	CCR4=mean(Cell_CCR4),
+	BCL2=mean(Cell_BCL2),
+	BCL6=mean(Cell_BCL6),
+	CD30=mean(Cell_CD30),
+	Ki67=mean(Cell_Ki67),
+	cMyc=mean(Cell_C),
+	PDL1=mean(Cell_PDL1),
+	TIM3=mean(Cell_Tim3),
+	LAG3=mean(Cell_Lag3),
+	PD1=mean(Cell_PD1),
+	ICOS=mean(Cell_ICOS),
+	Vista=mean(Cell_Vista),
+	CD45RO=mean(Cell_CD45RO),
+	CD206=mean(Cell_CD206),
+	NND.tumor=mean(k_1_Tumor),
+	HLADR=mean(Cell_HLADR),
+	CD206=mean(Cell_CD206))%>%data.frame
+
+
+
+ 
+	##split the NND by biological distances.	
+	subExpr$NND.status<-">25"
+	subExpr$NND.status[which(subExpr$NND.tumor<=10)]<-"10"
+	subExpr$NND.status[which(subExpr$NND.tumor>10 & subExpr$NND.tumor<=25)]<-"25"
+
+	## add response clinical variables.
+	subExpr$case<-full.dn4$case[match(subExpr$ROIID,full.dn4$ROIID)]
+	subExpr$response<-full.dn4$response[match(subExpr$case,full.dn4$case)]
+	subExpr$treatment<-full.dn4$treatment.status[match(subExpr$case,full.dn4$case)]
+	subExpr$COO<-full.dn4$COO[match(subExpr$case,full.dn4$case)]
+	##because we are comparing response drop LTF and ND
+	subExpr<-subExpr[which(subExpr$response!='LTF'),]
+	 ##drop ND
+       roiOmit<-unique(full.dn4$case[which(full.dn4$treatment.status=='ND')])
+  	subExpr<-subExpr[which(!subExpr$case%in%roiOmit),]
+	subExpr$response<-droplevels(subExpr$response)
+
+
+
+
+
+ ##pairwise testing specific sub-clusters.
+	##Dropped Non-treated and LTF.
+	## CR vs REF
+	t.test(subExpr[which(subExpr[,2]%in%'Tumor_2'),'PDL1'],subExpr[which(subExpr[,2]%in%'Tumor_6'),'PDL1'])
+	#MAC  CR vs REF
+	t.test(subExpr[which(subExpr[,2]%in%'Macrophage_5'),'PDL1'],subExpr[which(subExpr[,2]%in%'Macrophage_2'),'PDL1'])
+	
+
+	# CD4 CR vs REF
+	t.test(subExpr[grepl("CD4_7",subExpr[,2]),'PD1'],subExpr[grepl("CD4_1",subExpr[,2]),'PD1'])
+   t.test(subExpr[grepl("CD4_7",subExpr[,2]),'PDL1'],subExpr[grepl("CD4_1",subExpr[,2]),'PDL1'])
+	#t.test(subExpr[grepl("CD4_",subExpr[,2]),'LAG3'],subExpr[grepl("CD4_",subExpr[,2]),'LAG3'])
+		
+	#CD8  CR vs. REF
+	t.test(subExpr[which(subExpr[,2]%in%'CD8_7'),'PD1'],subExpr[which(subExpr[,2]%in%'CD8_4'),'PD1'])
+		
+
+```
+
+### Heatmap
+
+
+
+### ANOVA model
+
+
+```{r, eval=FALSE}
+
+
+  
+	### model the effect estimates for global trends.
+	lag3.eff<-model.tables(lag3,'effects')
+	cd45ro.eff<-model.tables(cd45ro,'effects')
+	pd1.eff<-model.tables(pd1,'effects')
+	ki67.eff<-model.tables(ki67,'effects')
+	tim3.eff<-model.tables(tim3,'effects')
+	dr.eff<-model.tables(hladr,'effects')
+
+	## global model. more comprehensive.
+	####	total levels is 37
+	alpha_noint <- rbind(
+	grandMean=rep(1,37)/37,
+	cd41.vs.mean=ifelse(subExpr[,2]%>%levels=="CD4_1",36,-1)/37,
+	cd42.vs.mean=ifelse(subExpr[,2]%>%levels=="CD4_2",36,-1)/37,
+	cd43.vs.mean=ifelse(subExpr[,2]%>%levels=="CD4_3",36,-1)/37,
+	cd44.vs.mean=ifelse(subExpr[,2]%>%levels=="CD4_4",36,-1)/37,
+	cd45.vs.mean=ifelse(subExpr[,2]%>%levels=="CD4_5",36,-1)/37,
+	cd46.vs.mean=ifelse(subExpr[,2]%>%levels=="CD4_6",36,-1)/37,
+	cd47.vs.mean=ifelse(subExpr[,2]%>%levels=="CD4_7",36,-1)/37,	
+
+	cd81.vs.mean=ifelse(subExpr[,2]%>%levels=="CD8_1",36,-1)/37,
+	cd82.vs.mean=ifelse(subExpr[,2]%>%levels=="CD8_2",36,-1)/37,
+	cd83.vs.mean=ifelse(subExpr[,2]%>%levels=="CD8_3",36,-1)/37,
+	cd84.vs.mean=ifelse(subExpr[,2]%>%levels=="CD8_4",36,-1)/37,
+	cd85.vs.mean=ifelse(subExpr[,2]%>%levels=="CD8_5",36,-1)/37,
+	cd86.vs.mean=ifelse(subExpr[,2]%>%levels=="CD8_6",36,-1)/37,
+	cd87.vs.mean=ifelse(subExpr[,2]%>%levels=="CD8_7",36,-1)/37,
+	## 
+	t1.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_1",36,-1)/37,
+	t2.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_2",36,-1)/37,
+	t3.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_3",36,-1)/37,
+	t4.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_4",36,-1)/37,
+	t5.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_5",36,-1)/37,
+	t6.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_6",36,-1)/37,
+	t7.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_7",36,-1)/37,
+	t8.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_8",36,-1)/37,
+	t9.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_9",36,-1)/37,
+	t10.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_10",36,-1)/37,
+
+	treg1.vs.mean=ifelse(subExpr[,2]%>%levels=="TREG_1",36,-1)/37,
+	treg2.vs.mean=ifelse(subExpr[,2]%>%levels=="TREG_2",36,-1)/37,
+	treg3.vs.mean=ifelse(subExpr[,2]%>%levels=="TREG_3",36,-1)/37,
+	treg4.vs.mean=ifelse(subExpr[,2]%>%levels=="TREG_4",36,-1)/37,
+	treg5.vs.mean=ifelse(subExpr[,2]%>%levels=="TREG_5",36,-1)/37,
+	treg6.vs.mean=ifelse(subExpr[,2]%>%levels=="TREG_6",36,-1)/37,
+
+	mac1.vs.mean=ifelse(subExpr[,2]%>%levels=="Macrophage_1",36,-1)/37,
+	mac2.vs.mean=ifelse(subExpr[,2]%>%levels=="Macrophage_2",36,-1)/37,
+	mac3.vs.mean=ifelse(subExpr[,2]%>%levels=="Macrophage_3",36,-1)/37,
+	mac4.vs.mean=ifelse(subExpr[,2]%>%levels=="Macrophage_4",36,-1)/37,
+	mac5.vs.mean=ifelse(subExpr[,2]%>%levels=="Macrophage_5",36,-1)/37,
+	mac6.vs.mean=ifelse(subExpr[,2]%>%levels=="Macrophage_6",36,-1)/37
+
+	   )
+
+   library(multcomp);library(lme4)
+	tim3.global <- lmer(TIM3 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	lag3.global <- lmer(LAG3 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	pd1.global <- lmer(PD1 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	cxcr3.global <- lmer(CXCR3 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	ccr4.global <- lmer(CCR4 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	hladr.global <- lmer(HLADR ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	pdl1.global <- lmer(PDL1 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	icos.global <- lmer(ICOS ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	ki67.global <- lmer(Ki67 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	vista.global <- lmer(Vista ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	bcl6.global <- lmer(BCL6 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	cd206.global <- lmer(CD206 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+
+  tim3.global <- glht(tim3.global, linfct=alpha_noint)
+  tim3.global.ci<-confint(tim3.global, calpha=univariate_calpha())
+  tim3.global.ci<- tim3.global.ci$confint%>%data.frame
+	tim3.global.ci$marker<-'TIM3'
+	##ki67
+	 ki.global <- glht(ki67.global, linfct=alpha_noint)
+ 	 ki.global.ci<-confint(ki.global, calpha=univariate_calpha())
+  	ki.global.ci<- ki.global.ci$confint%>%data.frame
+	ki.global.ci$marker<-'Ki67'
+
+	# PD1
+	 pd1.global <- glht(pd1.global, linfct=alpha_noint)
+ 	 pd1.global.ci<-confint(pd1.global, calpha=univariate_calpha())
+  	pd1.global.ci<- pd1.global.ci$confint%>%data.frame
+	pd1.global.ci$marker<-'PD1'
+
+	##Lag3
+	 lag3.global <- glht(lag3.global, linfct=alpha_noint)
+ 	 lag3.global.ci<-confint(lag3.global, calpha=univariate_calpha())
+  	lag3.global.ci<- lag3.global.ci$confint%>%data.frame
+	lag3.global.ci$marker<-'LAG3'
+
+	## CXCR3
+	 cxcr3.global <- glht(cxcr3.global, linfct=alpha_noint)
+ 	 cxcr3.global.ci<-confint(cxcr3.global, calpha=univariate_calpha())
+  	cxcr3.global.ci<- cxcr3.global.ci$confint%>%data.frame
+	cxcr3.global.ci$marker<-'CXCR3'
+
+	## CCR4
+	 ccr4.global <- glht(ccr4.global, linfct=alpha_noint)
+ 	 ccr4.global.ci<-confint(ccr4.global, calpha=univariate_calpha())
+  	ccr4.global.ci<- ccr4.global.ci$confint%>%data.frame
+	ccr4.global.ci$marker<-'CCR4'
+	## PDL1
+	 pdl1.global <- glht(pdl1.global, linfct=alpha_noint)
+ 	 pdl1.global.ci<-confint(pdl1.global, calpha=univariate_calpha())
+  	pdl1.global.ci<- pdl1.global.ci$confint%>%data.frame
+	pdl1.global.ci$marker<-'PDL1'
+
+ 	##HLADR
+	 hladr.global <- glht(hladr.global, linfct=alpha_noint)
+ 	 hladr.global.ci<-confint(hladr.global, calpha=univariate_calpha())
+  	hladr.global.ci<- hladr.global.ci$confint%>%data.frame
+	hladr.global.ci$marker<-'HLADR'
+
+	##BCL6
+	 bcl6.global <- glht(bcl6.global, linfct=alpha_noint)
+ 	 bcl6.global.ci<-confint(bcl6.global, calpha=univariate_calpha())
+  	bcl6.global.ci<- bcl6.global.ci$confint%>%data.frame
+	bcl6.global.ci$marker<-'BCL6'
+
+	##ICOS	
+	 icos.global <- glht(icos.global, linfct=alpha_noint)
+ 	 icos.global.ci<-confint(icos.global, calpha=univariate_calpha())
+  	icos.global.ci<- icos.global.ci$confint%>%data.frame
+	icos.global.ci$marker<-'ICOS'
+
+	##CD206
+	 cd206.global <- glht(cd206.global, linfct=alpha_noint)
+ 	 cd206.global.ci<-confint(cd206.global, calpha=univariate_calpha())
+  	cd206.global.ci<- cd206.global.ci$confint%>%data.frame
+	cd206.global.ci$marker<-'CD206'
+
+	##vista
+	 vista.global <- glht(vista.global, linfct=alpha_noint)
+ 	 vista.global.ci<-confint(vista.global, calpha=univariate_calpha())
+  	vista.global.ci<- vista.global.ci$confint%>%data.frame
+	vista.global.ci$marker<-'vista'
+
+
+	globalExpr<-rbind(tim3.global.ci,
+	ki.global.ci,
+	pd1.global.ci,
+	lag3.global.ci,
+	cxcr3.global.ci,
+	ccr4.global.ci,
+	pdl1.global.ci,	
+	hladr.global.ci,
+	bcl6.global.ci,
+	icos.global.ci,
+	cd206.global.ci,
+	vista.global.ci)
+
+	## use a SL regression on the 9p24 status and PDL1 on tumor.
+	x9p24<-zz[which(zz$subType.correction=='Tumor'),]%>%group_by(case,unsup.subcommunity,X9p24.Status)%>%summarise(PDL1=mean(Cell_PDL1))%>%data.frame
+	
+x9p24$X9p24.Status<-factor(x9p24$X9p24.Status,levels=c("Normal","Gain","Loss"))
+	 lm(PDL1~X9p24.Status,x9p24[grepl("Tumor_",x9p24[,2]),])%>%summary
+
+	##tumor abundances
+	abund<-as.data.frame.matrix(table(full.dn4$case,full.dn4$unsup.subcommunity))
+	abund<-100*abund/rowSums(abund)
+	abund$X9p24<-as.character(full.dn4$X9p24.Status[match(rownames(abund),full.dn4$case)])
+	abund$X9p24<-factor(abund$X9p24,levels=c("Normal","Gain","Loss"))
+	abund<-reshape2::melt(abund)
+	aov(value~ variable*X9p24,abund[grepl("Tumor_",abund$variable),])%>%anova
+####################
+	
+
+
+	###### 
+	## CD4 CXCR3 ANOVA
+	cd4.subExp<-subExpr[grepl("CD4_",subExpr$unsup.subcommunity),]
+	cd4.subExp$unsup.subcommunity<-droplevels(cd4.subExp$unsup.subcommunity)
+	### CD4 spatial heterogeneity
+	cd4.cxcr3<-aov(CXCR3~unsup.subcommunity*response+NND.status*response,cd4.subExp)
+	## custom contrasts for CXCR3
+	cd4.ccr4<-aov(CCR4~unsup.subcommunity*response+NND.status*response,cd4.subExp)
+	cd4.pd1<-aov(PD1~unsup.subcommunity*response+NND.status*response,cd4.subExp)
+	cd4.pdl1<-aov(PDL1~unsup.subcommunity*response+NND.status*response,cd4.subExp)
+	cd4.ic<-aov(ICOS~unsup.subcommunity*response+NND.status*response,cd4.subExp)
+	cd4.ki<-aov(Ki67~unsup.subcommunity*response+NND.status*response,cd4.subExp)
+	cd4.vi<-aov(Vista~unsup.subcommunity*response+NND.status*response,cd4.subExp)
+	cd4.lag3<-aov(LAG3~unsup.subcommunity*response+NND.status*response,cd4.subExp)
+	cd4.cd45ro<-aov(CD45RO~unsup.subcommunity*response+NND.status*response,cd4.subExp)
+	cd4.tim3<-aov(TIM3~unsup.subcommunity*response+NND.status*response,cd4.subExp)
+	
+	##CD4
+ 	#### end CD4 protein estimates.
+
+	
+	## CD8
+	 ##CD8
+	cd8.subExp<-subExpr[grepl("CD8",subExpr$unsup.subcommunity),]
+	cd8.subExp$unsup.subcommunity<-droplevels(cd8.subExp$unsup.subcommunity)
+	cd8.pd1<-aov(PD1~unsup.subcommunity*response+NND.status*response,cd8.subExp)
+	 cd8.tim3<-aov(TIM3~unsup.subcommunity*response+NND.status*response,cd8.subExp)
+	 cd8.lag3<-aov(LAG3~unsup.subcommunity*response+NND.status*response,cd8.subExp)
+	 cd8.cd45ro <- aov(CD45RO~unsup.subcommunity*response+NND.status*response,cd8.subExp)
+
+    ##distance
+   distanceSum<-full.dn4[which(full.dn4$treatment.status!='ND'),]%>%group_by(ROIID,unsup.subcommunity,response)%>%summarise(NND=mean(k_1_Tumor))%>%data.frame
+  lm(NND~response,distanceSum[which(distanceSum[,2]=='CD8_1'),])%>%summary
+  lm(NND~response,distanceSum[which(distanceSum[,2]=='CD8_6'),])%>%summary
+
+
+ ### end of CD8 NND ANOVA.
+
+
+	##Tumor
+	t.subExp<-subExpr[grepl("Tumor_",subExpr$unsup.subcommunity),]
+	t.subExp$unsup.subcommunity<-droplevels(t.subExp$unsup.subcommunity)
+	t.BCL2<-aov(BCL2~unsup.subcommunity*response,t.subExp)
+	t.ki<-aov(Ki67~unsup.subcommunity*response,t.subExp)
+	t.pdl1<-aov(PDL1~unsup.subcommunity*response,t.subExp)
+
+	
+
+ ### MACs
+	m.subExp<-subExpr[grepl("Macrophage",subExpr$unsup.subcommunity),]
+	m.subExp$unsup.subcommunity<-droplevels(m.subExp$unsup.subcommunity)
+	m.pdl1<-aov(PDL1~unsup.subcommunity*response+NND.status*response,m.subExp)
+	 m.tim3<-aov(TIM3~unsup.subcommunity*response+NND.status*response,m.subExp)
+	
+	
+
+	
+	
+	
+ ### TREG 
+ 	r.subExp<-subExpr[grepl("TREG",subExpr$unsup.subcommunity),]
+ 	r.subExp$unsup.subcommunity<-droplevels(r.subExp$unsup.subcommunity)
+	r.pd1<-aov(PD1~unsup.subcommunity*response+NND.status*response,r.subExp)
+	##keep NND as continuous
+	
+	##plot for NND difference interactions.
+
+	##ki and vista at 10 microns.
+	a<-cd4.pdl1%>%TukeyHSD
+	b<-cd4.vi%>%TukeyHSD
+	b2<-cd4.ic%>%TukeyHSD
+	c<-m.tim3%>%TukeyHSD
+	e<-r.pd1%>%TukeyHSD
+	d<-rbind(a[[5]]["Primary refract:10-CR:10",],
+	b[[5]]["Primary refract:10-CR:10",],
+	b2[[5]]["Primary refract:10-CR:10",],
+	c[[5]]["Primary refract:10-CR:10",],
+	e[[5]]["Primary refract:10-CR:10",])	
+	d<-as.data.frame(d)
+	d$phenotype<-c("CD4 PDL1","CD4 Vista","CD4 ICOS","MAC TIM-3","TREG PD-1")
+  ggplot(d,aes(x=phenotype,y=diff,color=phenotype))+geom_point(size=6)+geom_errorbar(aes(ymin=lwr,ymax=upr))+ylab("Primary refract - CR (10 microns)")+ggtitle("phenotypes with 10 micron distance from nearest tumor")+theme_ipsum(base_family='Arial')+scale_color_manual(values=c("blue","blue","blue","magenta","purple"))+geom_hline(yintercept=0,color='red',linetype='dashed')
+  
+
+  #ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure3-tables-figures-4-28/Expression.NND.10.Tukey.png")
+
+
+ ### write all these estimates to the excel sheet table.
+    fig2<-openxlsx::loadWorkbook("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure3-tables-figures-4-28/Figure3.B.tableData-FINAL.xlsx")
+	addWorksheet(fig2,"linear.model.estimates")
+	writeData(fig2,'linear.model.estimates',
+	cd4.ccr4%>%anova%>%data.frame,
+			rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=1)
+	writeData(fig2,'linear.model.estimates',
+	cd4.cxcr3%>%anova%>%data.frame,
+			rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=15)
+	writeData(fig2,'linear.model.estimates',
+	cd4.pd1%>%anova%>%data.frame,
+			rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=25)
+	writeData(fig2,'linear.model.estimates',
+	cd4.pdl1%>%anova%>%data.frame,
+			rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=35)	
+	writeData(fig2,'linear.model.estimates',
+	cd4.vi%>%anova%>%data.frame,
+			rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=45)
+	writeData(fig2,'linear.model.estimates',
+	cd4.ki%>%anova%>%data.frame,
+			rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=55)
+	writeData(fig2,'linear.model.estimates',
+	cd4.ic%>%anova%>%data.frame,
+			rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=65)
+
+	##Vista+CD4, PD1+CD4 COO and refractory association.
+	writeData(fig2,'linear.model.estimates',
+	lm(PD1.CD4~COO,x)%>%summary%>%coef,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=75)
+
+	writeData(fig2,'linear.model.estimates',
+	lm(Vista.CD4~COO,x)%>%summary%>%coef,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=80)
+
+
+
+	writeData(fig2,'linear.model.estimates',
+	cd8.pd1%>%anova%>%data.frame,
+			rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=100)
+
+	writeData(fig2,'linear.model.estimates',
+	cd8.tim3%>%anova%>%data.frame,
+			rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=125)
+
+
+	writeData(fig2,'linear.model.estimates',
+	cd8.lag3%>%anova%>%data.frame,
+			rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=145)
+
+	##distance model.		
+	  ##distance
+   distanceSum<-full.dn4[which(full.dn4$treatment.status!='ND'),]%>%group_by(ROIID,unsup.subcommunity,response)%>%summarise(NND=mean(k_1_Tumor))%>%data.frame
+ 
+ writeData(fig2,'linear.model.estimates',
+	lm(NND~response,distanceSum[which(distanceSum[,2]=='CD8_1'),])%>%summary%>%coef,
+			rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=170)
+
+  writeData(fig2,'linear.model.estimates',
+	 lm(NND~response,distanceSum[which(distanceSum[,2]=='CD8_6'),])%>%summary%>%coef,
+		rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=175)
+   ##patient proportions.
+ writeData(fig2,'linear.model.estimates',
+	 lm(PD1.CD8~COO,x2)%>%summary%>%coef,
+		rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=185)
+   
+ writeData(fig2,'linear.model.estimates',
+	lm(TIM3.CD8~COO,x2)%>%summary%>%coef,
+		rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=195)
+  
+
+ ### individual t-tests of expression comparing pairs of enriched/depleted phenotypes.
+	##pairwise testing specific sub-clusters.
+	ref.cr.subsets<-data.frame(Tumor2.vs.Tumor6.PDL1=t.test(subExpr[which(subExpr[,2]%in%'Tumor_2'),'PDL1'],subExpr[which(subExpr[,2]%in%'Tumor_6'),'PDL1'])$p.value,
+	CD47.vs.CD41.PD1=t.test(subExpr[grepl("CD4_7",subExpr[,2]),'PD1'],subExpr[grepl("CD4_1",subExpr[,2]),'PD1'])$p.value,
+	CD47.vs.CD41.PDL1=t.test(subExpr[grepl("CD4_7",subExpr[,2]),'PDL1'],subExpr[grepl("CD4_1",subExpr[,2]),'PDL1'])$p.value,
+	CD87.vs.CD84.PD1=t.test(subExpr[which(subExpr[,2]%in%'CD8_7'),'PD1'],subExpr[which(subExpr[,2]%in%'CD8_4'),'PD1'])$p.value,
+	MAC5.vs.MAC2.PDL1=t.test(subExpr[which(subExpr[,2]%in%'Macrophage_5'),'PDL1'],subExpr[which(subExpr[,2]%in%'Macrophage_2'),'PDL1'])$p.value)
+	 writeData(fig2,'linear.model.estimates',
+	t(ref.cr.subsets),
+		rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=210)
+  
+	 writeData(fig2,'linear.model.estimates',
+	cd4.lag3%>%anova,
+		rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=250)
+  	 writeData(fig2,'linear.model.estimates',
+	cd4.tim3%>%anova,
+		rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=265)
+  	##Tukey Testing.
+	##PDL1 Tukey  PD1,  ICOS  and Vista
+	## NND and interactions with Response.
+	## NND and interactions with Response.
+	cd4.pdl1.tukey<-cd4.pdl1%>%TukeyHSD
+	cd4.pd1.tukey<-cd4.pd1%>%TukeyHSD
+	cd4.vi.tukey<-cd4.vi%>%TukeyHSD
+	cd4.ic.tukey<-cd4.ic%>%TukeyHSD
+
+	writeData(fig2,'linear.model.estimates',
+	 cd4.pdl1.tukey[["response:NND.status"]]%>%data.frame,
+			rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=285)
+
+	writeData(fig2,'linear.model.estimates',
+	 cd4.pd1.tukey[["response:NND.status"]]%>%data.frame,
+			rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=305)
+
+
+	writeData(fig2,'linear.model.estimates',
+	cd4.vi.tukey[["response:NND.status"]]%>%data.frame,
+			rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=325)
+
+	writeData(fig2,'linear.model.estimates',
+	cd4.ic.tukey[["response:NND.status"]]%>%data.frame,
+			rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=345)
+
+	
+	
+ ####################################
+		
+	## write out the CD8 spatial variability
+	cd8.pd1.tukey<-cd8.pd1%>%TukeyHSD
+	cd8.lag3.tukey<-cd8.lag3%>%TukeyHSD
+	cd8.tim3.tukey<-cd8.tim3%>%TukeyHSD
+	## 	
+	writeData(fig2,'linear.model.estimates',
+	 cd8.pd1.tukey[["response:NND.status"]]%>%data.frame,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=370)
+
+	writeData(fig2,'linear.model.estimates',
+	 cd8.lag3.tukey[["response:NND.status"]]%>%data.frame,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=390)
+
+
+	writeData(fig2,'linear.model.estimates',
+	 cd8.tim3.tukey[["response:NND.status"]]%>%data.frame,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=410)
+
+	## MAC PDL1 and TIM3
+	writeData(fig2,'linear.model.estimates',
+	 m.pdl1%>%anova%>%data.frame,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=430)
+
+	writeData(fig2,'linear.model.estimates',
+	 m.tim3%>%anova%>%data.frame,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=450)
+	##spatial heterogeneity.
+	m.pdl1.tukey<-m.pdl1%>%TukeyHSD
+	m.tim3.tukey<-m.tim3%>%TukeyHSD
+	### 
+	writeData(fig2,'linear.model.estimates',
+	 m.pdl1.tukey[["response:NND.status"]]%>%data.frame,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=460)
+
+	writeData(fig2,'linear.model.estimates',
+	 m.tim3.tukey[["response:NND.status"]]%>%data.frame,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=480)
+
+
+	### TREG PD-1
+	writeData(fig2,'linear.model.estimates',
+	 r.pd1%>%anova%>%data.frame,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=500)
+
+	##spatial het
+	r.pd1.tukey<-r.pd1%>%TukeyHSD
+	writeData(fig2,'linear.model.estimates',
+	 r.pd1.tukey[["response:NND.status"]]%>%data.frame,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=515)
+
+	##spatial het
+	writeData(fig2,'linear.model.estimates',
+	globalExpr,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=540)
+
+
+	openxlsx::saveWorkbook(fig2,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure3-tables-figures-4-28/Figure3.B.tableData-FINAL2.xlsx",overwrite=TRUE)
+
+
+
+
+```
+
+
+### Clincal association
+```{r, eval=FALSE}
+#combine global expression.
+	##proportions.
+	##examine the PD1+ CD4 in terms of survival using percentages.
+	 x<-table(full.dn4$case,full.dn4$unsup.subcommunity)%>%as.data.frame.matrix
+	## PD1 CD8 1,2,5,6
+  	#PD1 CD4 1,2,5,6,7
+	x<-100*x/rowSums(x)
+	x$TIM3<-rowMeans(x[,c("CD4_1",
+	"CD4_5",
+	"CD4_7",
+	"CD8_1",
+	"CD8_2",
+	"CD8_3",
+	"CD8_5",
+	"CD8_6",
+	"TREG_2",
+	"TREG_6",
+	"Macrophage_2")])
+
+	x$LAG3<-rowMeans(x[,c("CD4_1",
+	"CD4_5",
+	"CD4_6",
+	"CD8_1",
+	"CD8_2",
+	"CD8_3",
+	"CD8_5",
+	"CD8_6",
+	"TREG_2")])
+
+	x$PD1<-rowMeans(x[,c("CD4_1",
+	"CD4_2",
+	"CD4_5",'CD4_6','CD4_7',
+	"CD8_1",
+	"CD8_2",
+	"CD8_3",
+	"CD8_5",
+	"CD8_6",
+	"TREG_2")])
+
+	x$PDL1<-rowMeans(x[,c("CD4_5","CD4_1",
+	"Macrophage_2")])
+
+	 x$PD1.CD4<-rowMeans(x[,c('CD4_1',
+	'CD4_2','CD4_5','CD4_6','CD4_7')])
+ 	x$Vista.CD4<-rowMeans(x[,c('CD4_1',
+	'CD4_5')])
+
+	x$PD1.CD8<-rowMeans(x[,c('CD8_1','CD8_2','CD8_5','CD8_6')])
+	x$TIM3.CD8<-rowMeans(x[,c('CD8_1','CD8_2','CD8_3','CD8_5','CD8_6')])
+
+	x$COO<-full.dn4$COO[match(rownames(x),full.dn4$case)]
+	lm(TIM3~COO,x)%>%summary
+	lm(LAG3~COO,x)%>%summary
+	lm(PD1~COO,x)%>%summary
+	lm(PDL1~COO,x)%>%summary
+	lm(PD1.CD4~COO,x)%>%summary
+	lm(Vista.CD4~COO,x)%>%summary
+	lm(PD1.CD8~COO,x)%>%summary
+	lm(TIM3.CD8~COO,x)%>%summary
+
+
+	x$response<-full.dn4$response[match(rownames(x),full.dn4$case)]
+	x$treatment<-full.dn4$treatment[match(rownames(x),full.dn4$case)]
+	x2<-x[which(x$treatment!='ND'),]
+	lm(PD1.CD8~COO+response,x2)%>%summary
+	lm(PD1.CD4~COO+response,x2)%>%summary
+
+	lm(TIM3.CD8~COO+response,x2)%>%summary
+	lm(Vista.CD4~COO+response,x2)%>%summary
+
+```
+
+
+
+### Figure 3 Heatmap
+
+
+```{r, eval=FALSE}
+  library(dendsort)
+  ### 
+
+   communityExp3<-zz%>%group_by(unsup.subcommunity)%>%dplyr::summarise(TIM3=mean(Cell_Tim3),
+	LAG3=mean(Cell_Lag3),
+	PD1=mean(Cell_PD1),
+	Vista=mean(Cell_Vista),
+	ICOS=mean(Cell_ICOS),
+	PDL1=mean(Cell_PDL1),
+	#CCR4=mean(Cell_CCR4),
+	distance=mean(k_1_Tumor),
+	CD4=mean(Cell_CD4),
+	CD8=mean(Cell_CD8),	
+	CD68=mean(Cell_CD68),
+	FOXP3=mean(Cell_FOXP3),	
+	CD206=mean(Cell_CD206),
+	Ki67=mean(Cell_Ki67))%>%data.frame
+   stateExp<-t(communityExp3[,-1])
+  colnames(stateExp)<-communityExp3[,1]
+  stateExp<-stateExp[,!grepl("Tumor_",colnames(stateExp))]
+   stateExp<-stateExp[,!grepl("Endothelial",colnames(stateExp))]
+ 
+
+
+  
+  communityExp3<-as.data.frame(t(stateExp))
+ communityExp3$unsup.subcommunity<-rownames(communityExp3)
+
+ ## fitting the expression into a mutation model.
+ 
+
+   
+ ### use the patient average of expression values.
+  fitExpr<-communityExp3[,c(1:6,8:13)]
+  fitExpr<-t(fitExpr)
+  cd4Ex<-fitExpr[,grepl("CD4_",colnames(fitExpr))]
+ cd8Ex<-fitExpr[,grepl("CD8_",colnames(fitExpr))]
+  macEx<-fitExpr[,grepl("Macrophage_",colnames(fitExpr))]
+  tregEx<-fitExpr[,grepl("TREG_",colnames(fitExpr))]
+  #communityExp3$fitted.distance<-communityExp3$distance
+ ###distance color schema
+  col_fun <- circlize::colorRamp2(breaks = c(8, 15, 19.9),
+                  colors = c("green", "dodgerblue3", "black"),
+                  transparency = 0.02)
+
+ cd4_ha = HeatmapAnnotation(
+	#community = colnames(cd4Ex),
+	distance=communityExp3[colnames(cd4Ex),"distance"],
+	which="column",
+	show_annotation_name=FALSE,
+	col=list(
+	#community=txb.sel.col[[1]],
+	distance=col_fun),
+	 annotation_width=unit(c(1, 3), "cm"), 
+	gap=unit(1, "mm"))
+	#annotation_legend_param=list(community=list(ncol=3)))
+ cd4h<- Heatmap(cd4Ex,top_annotation=cd4_ha,name="CD4 mean")
+
+
+ cd8_ha = HeatmapAnnotation(
+	#community = colnames(cd8Ex),
+	distance=communityExp3[colnames(cd8Ex),"distance"],
+	which="column",
+	show_annotation_name=FALSE,
+	col=list(
+	#community=txb.sel.col[[1]],
+	distance=col_fun),
+	 annotation_width=unit(c(1, 3), "cm"), 
+	gap=unit(1, "mm"))
+	#annotation_legend_param=list(community=list(ncol=3)))
+ cd8h<-Heatmap(cd8Ex,top_annotation=cd8_ha,name="CD8 mean")
+
+
+ mac_ha = HeatmapAnnotation(
+	#community = colnames(macEx),
+	distance=communityExp3[colnames(macEx),"distance"],
+	which="column",
+	show_annotation_name=FALSE,
+	col=list(community=txb.sel.col[[1]],
+	distance=col_fun),
+	 annotation_width=unit(c(1, 3), "cm"), 
+	gap=unit(1, "mm"))
+	#annotation_legend_param=list(community=list(ncol=3)))
+  mach<-Heatmap(macEx,top_annotation=mac_ha,name="MAC mean")
+
+ treg_ha = HeatmapAnnotation(
+	#community = colnames(tregEx),
+	distance=communityExp3[colnames(tregEx),"distance"],
+	which="column",
+	show_annotation_name=TRUE,
+	col=list(community=txb.sel.col[[1]],
+	distance=col_fun),
+	 annotation_width=unit(c(1, 3), "cm"), 
+	gap=unit(1, "mm"))
+	#annotation_legend_param=list(community=list(ncol=3)))
+  tregh<-Heatmap(tregEx,top_annotation=treg_ha,name="TREG mean")
+  ht_list<-cd4h+cd8h+mach+tregh
+ draw(ht_list, row_km = 1,  cluster_rows = TRUE,ht_gap = unit(1, "mm"))
+ #savePlot(file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure3-tables-figures-4-28/final.hierarchical.state.dropResponse.png")
+
+
+
+```
+
+
+### Hazard (univariate) estimates
+
+```{r,eval=FALSE}
+
+
+### Hazard estimates for proportions
+```{r}
+ ## get the proportion information.
+
+ patient.abund<-as.data.frame.matrix(table(zz$case,zz$unsup.subcommunity))
+ patient.abund<-100*patient.abund/rowSums(patient.abund)
+ patient.abund$Case<-rownames(patient.abund)
+ ## collect the survival data.
+ ## keep the ND/LTF.
+ 	
+	 clinic<-mutationClinicalSheetAssembly(mutationsToGather=c("TP53","BCL2","BCL6","CD79B","SGK1","MYD88","MYC","NOTCH1","NOTCH2","EZH2","CREBBP"),full.dn4=full.dn4.5nn2)
+	 S<-data.frame(time=clinic$os_d,event=ifelse(clinic$os=='event',1,0),Case=clinic$Case_ID)
+	S<-S[!duplicated(S$Case),]
+	S<-S[!is.na(S$time),]
+	patient.abund<-left_join(patient.abund,S,by='Case')
+	patient.abund<-patient.abund[!is.na(patient.abund$time),]
+
+	ce<-full.dn4.5nn2%>%group_by(case)%>%summarise(CE=mean(core.mantle.crust.evansZ))%>%data.frame
+	colnames(ce)[1]<-'Case'
+	patient.abund<-left_join(patient.abund,ce,by='Case')
+
+	#estimate the Cox hazard proportions.
+	coxFit<-function(patient.abund=NULL,feature=NULL){
+	form<- as.formula(paste0("Surv(time,event)~",feature))
+	fit<-coxph(form,patient.abund)
+	dat<-data.frame(coef=coef(fit),confint(fit))
+	return(dat)
+ 	}
+
+  f<-NULL
+  for(i in c(colnames(patient.abund)[1:37],'CE')){
+   fit<-coxFit(patient.abund,feature=i)
+   f<-rbind(f,fit) 
+  }
+  f$phenotype<-rownames(f)
+  phenoCols<-getPhenoColors(full.dn4.5nn2)
+   f$phenotype[which(rownames(f)=='CE')]<-'Tumor spatial regularity'
+
+  f$colors<-phenoCols[match(f$phenotype,names(phenoCols))]
+  f$colors[which(rownames(f)=='CE')]<-'black'
+    f<-f[order(f$coef,decreasing=TRUE),]
+  f$phenotype<-factor(f$phenotype,levels=f$phenotype)
+  f<-f[which(f[,3]<2),]
+  library(hrbrthemes)
+
+ ggplot(f,aes(x=phenotype,y=coef,color=phenotype))+geom_point(size=4)+geom_errorbar(aes(ymin=X2.5..,ymax=X97.5..))+scale_color_manual(values=f$colors)+theme_ipsum(base_family='Arial')+theme(axis.text.x=element_text(angle=90,size=18),axis.text.y=element_text(size=18),axis.title.x=element_text(size=12),axis.title.y=element_text(size=12))+ylab('Cox proportional hazard estimate')+xlab("Major cell component sub-cluster")+coord_flip()
+
+ # ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure3-tables-figures-4-28/CoxPH.abundances.png")
+
+ 
+ fig3<-loadWorkbook("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure3-tables-figures-4-28/Figure3.B.tableData-FINAL.xlsx")
+  addWorksheet(fig3,'univar.coxph')
+  writeData(fig3,'univar.coxph',
+ 	f,
+		rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=1)
+ 
+   openxlsx::saveWorkbook(fig3,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure3-tables-figures-4-28/Figure3.B.tableData-FINAL_back.xlsx",overwrite=TRUE)
+
+
+
+```
+
+```

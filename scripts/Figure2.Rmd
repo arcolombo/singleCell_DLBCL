@@ -1,0 +1,695 @@
+---
+title: "Imaging mass cytometry reveals tumor and immune spatial and phenotypic clusters associated with clinical outcomes in diffuse large B cell lymphoma (DLBCL)"
+author: "Anthony Colombo+,Monirath Hav+, Erik Gerdtsson"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+# {.tabset}  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup {.tabset}
+
+### Helper Functions
+```{r, eval=FALSE}
+
+ zScorePatientExpression
+function(full.dn4=NULL,markers=NULL,ROIID.column=NULL){
+  X3<-full.dn4[,c(markers,ROIID.column)]%>%group_by(ROIID)%>%summarise_all(funs(sd))%>%data.frame
+  X2<-full.dn4[,c(markers,ROIID.column)]%>%group_by(ROIID)%>%summarise_all(funs(mean))%>%data.frame
+   ###
+   z<-full.dn4
+  for(cl in unique(full.dn4$ROIID)){
+   for(mark in colnames(X2)[-1]){
+  z[which(z$ROIID==cl),which(colnames(z)==mark)]<- ( z[which(z$ROIID==cl),which(colnames(z)==mark)]-X2[which(X2$ROIID==cl),which(colnames(X2)==mark)])/(X3[which(X3$ROIID==cl),which(colnames(X3)==mark)])
+   }
+ }
+ return(z)
+ }
+
+
+ makeJoyPlot<-function(z,marker=NULL){
+   ltlist<-list()
+     for(roi in unique(z$ROIID)){
+      lt = data.frame(density(z[which(z$ROIID==roi),marker])[c("x","y")])
+    ltlist[[(length(ltlist)+1)]]<-lt
+     }
+    marker1= rowAnnotation(Z= anno_joyplot(ltlist, width = unit(4, "cm"), 
+    gp = gpar(fill = color_clusters),
+	 transparency = 0.35)) 
+  marker1@anno_list[[1]]@name <-gsub("Cell_","",marker)
+  names(marker1@anno_list)<-gsub("Cell_","",marker)
+    return(marker1)
+   }
+
+
+ ## this function performs Chi-square on the direct standardized counts per case
+## direct standardization, standardizes the number of cells per case.
+## direct standardization takes the given sub-community relative proportion, and then multiplies by the average number of cells across all cases (19,919). Each sub-community cluster has a different relative abundance.  By multiplying the cluster proportion by the standardized case cell average, it returns the expected number of cells in a sub-cluster assuming that all cases had the same number of cells.  It balances the expectation if all cases captured the same number of cells. so it scales the relative case proportions under the expectation that all cases had the same average cells. 
+ chiHelperMeanScale<-function(pheno=NULL,full.dn4=NULL,phenotypeColumn="unsup.subcommunity"){
+ ### the features are average to scale the data.
+	##only works for HANS COO
+	##phenotype column is the column of phenoytpe levels.
+    message(pheno)
+    primary<-sapply(strsplit(pheno,"_"),function(x) x[1])
+    ta<-as.data.frame.matrix(table(full.dn4$case,full.dn4[,phenotypeColumn]))
+    ta<-ta/rowSums(ta)
+    ## direct standardization
+    ta<-round(mean(table(full.dn4$case))*ta)
+    ta$COO<-full.dn4$COO[match(rownames(ta),full.dn4$case)]
+    ta2<-ta[,c(pheno,"COO")]
+    x11<-round(mean(ta2[which(ta2$COO=="GCB"),1]))+1
+    x12<-round(mean(ta2[which(ta2$COO!="GCB"),1]))+1
+    ta3<-ta[,grepl(primary,colnames(ta))]
+    ta3<-ta3[,which(colnames(ta3)!=pheno)]
+    ta3$COO<-ta2$COO[match(rownames(ta3),rownames(ta2))]
+   ta3<-ta3%>%group_by(COO)%>%summarise_all(funs(mean))%>%data.frame()
+    x21<-round(mean(as.numeric(ta3[which(ta3$COO=="GCB"),-1])))+1
+    x22<-round(mean(as.numeric(ta3[which(ta3$COO=="NGCB"),-1])))+1
+    mat<-matrix(c(x11,x21,x12,x22),nrow=2,ncol=2)
+	rownames(mat)<-c(paste0(pheno,"+"),paste0(pheno,"-"))
+	colnames(mat)<-c("GCB","NGCB")
+ ### need OR with confidence intervals
+     require(epitools)
+     dd<-oddsratio(mat,rev="both")
+	return(dd)
+  }
+
+ ### logistic regression using direct standardization.
+ ##logistic regression standard.
+ logisticRegressionClinicalOdds<-function(pheno=NULL,full.dn4=NULL,phenotypeColumn=NULL,mycFeature=NULL,groupA=1){
+    message(pheno)
+    primary<-sapply(strsplit(pheno,"_"),function(x) x[1])
+    ta<-as.data.frame.matrix(table(full.dn4$case,full.dn4[,phenotypeColumn]))
+    ta<-ta/rowSums(ta)
+    ## direct standardization
+    ta<-round(mean(table(full.dn4$case))*ta)
+	ta<-as.data.frame(scale(ta))
+    ta$feature<-full.dn4[match(rownames(ta),full.dn4$case),mycFeature]
+    ta$feature<-ifelse(ta$feature==groupA,1,0)
+  colnames(ta)[which(colnames(ta)=="feature")]<-mycFeature
+    myForm<-formula(paste0(mycFeature,"~",pheno))
+	fit<-glm(myForm,ta,family='binomial')
+	ci<-exp(confint(fit))
+  dd<-exp(coef(glm(myForm,ta,family='binomial')))
+   dd<-cbind(ci,dd)%>%data.frame
+  pv<-summary(fit)%>%coef%>%data.frame
+  dd$p<-pv[,4]
+	return(dd[pheno,])
+  } 
+
+
+
+
+
+```
+
+
+### Figure 2
+ This shows the expression standardization and the association with mutation factors.
+ We omitted subjects not determined for chemotherapy treatment. 
+
+```{r, eval=FALSE}
+
+ ## we include the full panel, and morphological features (and DNA).
+  zz<- zScorePatientExpression(full.dn4=full.dn4,markers=c(1:31,104:111),ROIID.column=32)
+  zz[,c(1:31,32,104:111)]%>%group_by(ROIID)%>%summarise_all(funs(sd))%>%data.frame
+  zz[,c(1:31,32,104:111)]%>%group_by(ROIID)%>%summarise_all(funs(mean))%>%data.frame
+ ##omit ND from expression analysis.
+  zz<-zz[!zz$ROIID%in%unique(full.dn4$ROIID[which(full.dn4$treatment.status=="ND")]),]
+  nd.omit<-unique(full.dn4$ROIID[which(full.dn4$treatment.status=="ND")])
+  unique(zz$ROIID)%in%nd.omit
+  library(hrbrthemes)
+  
+
+ ## show the ROI standardization.
+  z<-zz
+   d<-data.frame(ROI=unique(z$ROIID),col=c(color_clusters,color_clusters[1:8]) )
+ 
+ roiCol<-d[,2] 
+  names(roiCol)<-d[,1]
+  ### add ROI annotation. 
+ rois<-HeatmapAnnotation(ROI=unique(z$ROIID),
+	which="row",
+	col=list(ROI=roiCol),
+	annotation_legend_param=list(ncol=5))
+
+
+   bcl2<-makeJoyPlot(z,marker="Cell_BCL2")
+   bcl6<-makeJoyPlot(z,marker="Cell_BCL6")
+     cd20<-makeJoyPlot(z,marker="Cell_CD20")
+   cd206<-makeJoyPlot(z,marker="Cell_CD206")
+    CD3<-makeJoyPlot(z,marker="Cell_CD3")
+   CD31<-makeJoyPlot(z,marker="Cell_CD31")
+   CD4<-makeJoyPlot(z,marker="Cell_CD4")
+   CD45RA<-makeJoyPlot(z,marker="Cell_CD45RA")
+   cd45ro<-makeJoyPlot(z,marker="Cell_CD45RO")
+   cd68<-makeJoyPlot(z,marker="Cell_CD68")
+    cd8<-makeJoyPlot(z,marker="Cell_CD8")
+   foxp3<-makeJoyPlot(z,marker="Cell_FOXP3")
+   hladr<-makeJoyPlot(z,marker="Cell_HLADR")
+   ccr4<-makeJoyPlot(z,marker="Cell_CCR4")
+    cxcr3<-makeJoyPlot(z,marker="Cell_CXCR3")
+    granz<-makeJoyPlot(z,marker="Cell_Granzym")
+    icos<-makeJoyPlot(z,marker="Cell_ICOS")
+   ki<-makeJoyPlot(z,marker="Cell_Ki67")
+   lag<-makeJoyPlot(z,marker="Cell_Lag3")
+   pd1<-makeJoyPlot(z,marker="Cell_PD1")
+   pdl1<-makeJoyPlot(z,marker="Cell_PDL1")
+    tim3<-makeJoyPlot(z,marker="Cell_Tim3")
+    vista<-makeJoyPlot(z,marker="Cell_Vista")
+    vimentin<-makeJoyPlot(z,marker="Cell_Vimentin") 
+
+     eph<-makeJoyPlot(z,marker="Cell_EphrinB2") 
+     cc<-makeJoyPlot(z,marker="Cell_C") 
+      cd134<-makeJoyPlot(z,marker="Cell_CD134") 
+      pdl2<-makeJoyPlot(z,marker="Cell_PDL2") 
+     pp<-makeJoyPlot(z,marker="Cell_p")
+ 
+
+  draw(bcl2+bcl6+cd20+cd206+CD3+CD31+CD4+CD45RA+cd45ro+cd68+cd8+rois)
+ # savePlot(file="patient.zscores.expression.png")
+ draw(foxp3+hladr+ccr4+cxcr3+granz+icos+ki+lag+pd1+pdl1+tim3+rois)
+  #savePlot(file="patient.zscores.expression2.png")
+  draw(vista+vimentin+eph+cc+cd134+pdl2+pp+rois)
+   # savePlot(file="patient.zscores.expression3.png")
+
+
+
+ ### Heatmap the sub-clusters and the clinical associations.
+
+   X<-z[,c(1:31,177)]%>%group_by(unsup.subcommunity)%>%summarise_all(funs(mean))%>%data.frame
+   colnames(X)<-gsub("Cell_","",colnames(X))
+
+  require(dendsort);require(pvclust)
+  rpt.pv<-pvclust(log(1+X[,-1]),nboot=100,method.hclust="average")
+  rpt.dend<-dendsort(hclust(dist(log(1+X[,c(-1)]))),isReverse=TRUE)
+  library(ComplexHeatmap);library(dendextend)
+
+ ## uses the full panel and the unsupervised community
+   phenoColors<-getPhenoColors(full.dn4)
+  heats<-Heatmap(X[,c(-1)],
+                  cluster_rows=rpt.dend,
+                  cluster_columns=rpt.pv$hclust,
+		name="Measurement mean",
+		rect_gp = gpar(col = "white", lwd = 1))
+
+    rpt.dend=color_branches(rpt.dend,k=37,
+	col=phenoColors[as.character(X$unsup.subcommunity[row_order(heats)])])
+   heats<-Heatmap(X[,c(-1)],
+                  cluster_rows=rpt.dend,
+                  cluster_columns=rpt.pv$hclust,
+		name="Measurement mean",
+		rect_gp = gpar(col = "white", lwd = 1))
+
+  ### annotation row for COO.
+ txb.df<-data.frame(phenotype=X$unsup.subcommunity)
+ txb.sel.col=list(phenotype=phenoColors[match(levels(X$unsup.subcommunity),names(phenoColors))])
+   myid<-which(txb.df[,1]%in%c("Macrophage_1","TREG_2","TREG_6","Tumor_6"))
+   mylab<-txb.df[myid,1]
+ rowAnn <- HeatmapAnnotation(df=txb.df,which="row", 
+	col=txb.sel.col,
+	 annotation_width=unit(c(1, 3), "cm"), 
+	gap=unit(1, "mm"),annotation_legend_param=list(phenotype=list(ncol=3,title_position="topcenter")))
+	#link = anno_mark(at =myid ,
+        #labels = as.character(mylab)))        
+   
+ rowAnnLabeled <- HeatmapAnnotation(df=txb.df,which="row", 
+	col=txb.sel.col,
+	 annotation_width=unit(c(1, 3), "cm"), 
+	gap=unit(1, "mm"),annotation_legend_param=list(phenotype=list(ncol=3,title_position="topcenter")),
+	link = anno_mark(at =seq(1,nrow(txb.df)) ,
+        labels = as.character(txb.df[,1])))
+  heats+rowAnnLabeled
+   #savePlot(file="Figure1.subCommunity.clinical.mutations.Labeled.png")
+
+ ###updating the mutational profile in the Figure 1 plot.
+ #############
+ clustSize<-as.data.frame(table(full.dn4$unsup.subcommunity))
+  rownames(clustSize)<-clustSize$Var1
+ clustSize<-clustSize[match(X$unsup.subcommunity,clustSize$Var1),]
+  #clustSize<-clustSize[row_order(heats),]
+  #rownames(clustSize)<-clustSize[,"Var1"]
+  clustSize<-data.frame(clustSize[,-1],row.names=rownames(clustSize))
+
+   ## annotation bar plot of cluster size.
+  size<-rowAnnotation(cluster_size = anno_barplot(clustSize,
+	 gp = gpar(fill = phenoColors[match(levels(X$unsup.subcommunity),names(phenoColors))]), 
+    axis_param = list(direction = "reverse"), border=FALSE,
+    bar_width = 1, width = unit(2, "cm")))
+ size+heats+rowAnnLabeled
+
+
+  ### COO odds ratio
+  ### assemble the OR for COO
+  pvals<-lapply(as.character(unique(full.dn4$unsup.subcommunity)[-3]),function(x) chiHelperMeanScale(pheno=x,full.dn4))
+  names(pvals)<-as.character(unique(full.dn4$unsup.subcommunity)[-3])
+ 
+ ### expected counts of COO in each cluster
+  abund<-table(full.dn4$case,full.dn4$unsup.subcommunity)%>%as.data.frame.matrix
+  abund<-abund/rowSums(abund)
+  caseAvg<-table(full.dn4$case)%>%mean
+  abund<-caseAvg*abund
+  abund$COO<-full.dn4$COO[match(rownames(abund),full.dn4$case)]
+  abund$GCB<-ifelse(abund$COO=='GCB',1,0)
+
+
+  
+
+ 
+ glmOdds<-lapply(as.character(unique(full.dn4$unsup.subcommunity)[-3]),function(x) logisticRegressionClinicalOdds(pheno=x,full.dn4,phenotypeColumn="unsup.subcommunity",mycFeature="COO",groupA="GCB"))
+  #names(glmOdds)<-as.character(unique(full.dn4$unsup.subcommunity))
+  names(glmOdds)<-sapply(glmOdds,function(x) rownames(x))
+  glmOdds<-t(sapply(glmOdds,function(x) x[3:4]))%>%data.frame
+  glmOdds[,2]<-unlist(glmOdds[,2])
+  glmOdds[,2]<-unlist(glmOdds[,2])
+
+ glmOdds<- rbind(glmOdds,c(1,1))%>%data.frame
+ rownames(glmOdds)[37]<-"Endothelial"
+  ## the logistic regression odds matches the Chi-square directionality.
+ 
+ 
+
+
+  ors<-unlist(sapply(seq(1,length(pvals)),function(x) pvals[[x]]$measure[2,1]))
+  or.p<-unlist(sapply(seq(1,length(pvals)),function(x) pvals[[x]]$p.value[2,1]))
+ ors<-ifelse(ors>10,5,ors)
+ ors<-data.frame(OR=ors,p=or.p,row.names=names(pvals))
+  ORS<-data.frame(OR=rep(0,nrow(X)),row.names=X$unsup.subcommunity)
+   ORS[,1]<-ors[match(rownames(ORS),rownames(ors)),1]
+	ORS["Endothelial",1]<-1
+	ORS$p<-ors[match(rownames(ORS),rownames(ors)),"p"]
+ ORS["Endothelial",2]<-1
+
+   ors<-ORS
+ or.cols<-rep("bisque1",nrow(ors))
+  or.cols[which(ors[,1]>1.38 & ors[,"p"]<0.01)]<-"red"
+  or.cols[which(ors[,1]<0.8 & ors[,"p"]<0.01 )]<-"blue"
+      ORS<-cbind(ORS,glmOdds[rownames(ORS),])
+  colnames(ORS)<-c("OR","p","LR.Estimate","LR.p")
+
+
+  ## plotting the odds ratio compared to logisitic 
+  ORS$LR.Estimate<-ifelse(ORS$LR.Estimate>10,5,ORS$LR.Estimate)
+  library(hrbrthemes)
+
+  ggplot(ORS,aes(x=OR,y=LR.Estimate))+geom_point()+xlab("Chi-square OR")+ylab("GLM Odds Ratio")+ theme_ipsum(base_family="Arial")+ggtitle("HANS GCB/Non-GCB Odds Risk")
+
+ 
+
+  hans = rowAnnotation(
+   HANS  = anno_points(ors[,1], 
+        gp = gpar(col = or.cols),
+	height = unit(3, "cm"),
+	size=unit(ifelse(or.cols=="bisque1",0.5,2.5)
+,"mm"),
+	axis_param=list(side="top",
+	labels_rot=45) ))
+
+
+  size+hans+heats+rowAnnLabeled
+
+
+
+ ## add the double hit c-MYC information.
+  myc<-data.frame(ROIID=clinic$Run.ID,
+	bcl2.ihc=clinic$bcl2,
+	cmyc.category=clinic$cmyc.category,	
+	"X9p24"=clinic[,"X9p24.Status"],
+	stringsAsFactors=FALSE)
+  ## category 4 is MYC+ by IHC 
+	myc$cmyc.category<-ifelse(myc$cmyc.category>=4,1,0)
+	myc$cmyc.category[which(is.na(myc$cmyc.category))]<-0
+	myc$bcl2.ihc[which(is.na(myc$bcl2.ihc))]<-0
+	myc$double.expressor<-myc$bcl2.ihc*myc$cmyc.category
+	myc[,"X9p24"]<-as.character(myc[,"X9p24"])
+        myc[grepl("gain",myc[,"X9p24"]),"X9p24"]<-"Gain"
+    myc[grepl("Gain",myc[,"X9p24"]),"X9p24"]<-"Gain"
+      myc[grepl("Amp",myc[,"X9p24"]),"X9p24"]<-"Gain"
+   myc[which(myc$X9p24==""| myc$X9p24==0),"X9p24"]<-"Normal"
+    myc[which(myc$X9p24==1),"X9p24"]<-"Gain"
+   myc[grepl("loss",myc[,"X9p24"]),"X9p24"]<-"Loss"
+
+ 
+ ## add in 9p24 status
+    full.dn4$X9p24.Status<-myc$X9p24[match(full.dn4$ROIID,myc$ROIID)]
+ ## add in double expressor.
+     full.dn4$double.expressor<-myc$double.expressor[match(full.dn4$ROIID,myc$ROIID)]
+
+  mycvals<-lapply(as.character(unique(full.dn4$unsup.subcommunity)[-3]),
+	function(x) chiHelperStatus(pheno=x,full.dn4=full.dn4,phenotypeColumn="unsup.subcommunity",mycFeature="double.expressor"))
+
+ ### glmOdds
+  dEx.Odds<-lapply(as.character(unique(full.dn4$unsup.subcommunity)[-3]),function(x) logisticRegressionClinicalOdds(pheno=x,full.dn4,phenotypeColumn="unsup.subcommunity",mycFeature="double.expressor",groupA=1))
+
+  names(dEx.Odds)<-sapply(dEx.Odds,function(x) rownames(x))
+ 
+  dEx.Odds<-t(sapply(dEx.Odds,function(x) x[3:4]))%>%data.frame
+  dEx.Odds[,1]<-unlist(dEx.Odds[,1])
+  dEx.Odds[,2]<-unlist(dEx.Odds[,2])
+
+ dEx.Odds<- rbind(dEx.Odds,c(1,1))%>%data.frame
+ rownames(dEx.Odds)[37]<-"Endothelial"
+
+
+ 
+  names(mycvals)<-as.character(unique(full.dn4$unsup.subcommunity)[-3])
+  ### generates a data frame
+  oddsRatioDataFrame<-function(pvals=NULL,X=NULL){
+ ors<-unlist(sapply(seq(1,length(pvals)),function(x) pvals[[x]]$measure[2,1]))
+  or.p<-unlist(sapply(seq(1,length(pvals)),function(x) pvals[[x]]$p.value[2,1]))
+ ors<-ifelse(ors>10,5,ors)
+ ors<-data.frame(OR=ors,p=or.p,row.names=names(pvals))
+  ORS<-data.frame(OR=rep(0,nrow(X)),row.names=X$unsup.subcommunity)
+   ORS[,1]<-ors[match(rownames(ORS),rownames(ors)),1]
+	ORS["Endothelial",1]<-1
+	ORS$p<-ors[match(rownames(ORS),rownames(ors)),"p"]
+ ORS["Endothelial",2]<-1
+ #    ors<-data.frame(OR=c(ors[1:14],1,ors[15:36]),row.names=names(pvals))
+   ors<-ORS
+   return(ors) 
+ } 
+
+
+  mycData<-oddsRatioDataFrame(pvals=mycvals,X=X)
+ mycData$glm.OR<-dEx.Odds[rownames(mycData),'dd']
+
+
+  ## plotting the odds ratio compared to logisitic 
+  mycData$glm.OR<-ifelse(mycData$glm.OR>10,5,mycData$glm.OR)
+  mycData[which(rownames(mycData)=="Endothelial"),]<-1
+
+ pvalue_col_fun = colorRamp2(c(0, 2, 3), c("grey95", "grey95", "grey95")) 
+ mycData$symbol=NA
+  mycData$symbol[which(mycData$glm.OR>2 & mycData$p<0.001)]<-8
+  reArrange<-HeatmapAnnotation("d.expressor"=anno_simple(rep(0,nrow(mycData)),
+	col=pvalue_col_fun,
+	pch=mycData$symbol,
+	pt_size=unit(2,"mm"),
+	border=TRUE,
+	gp=gpar(col='grey85')),
+	which="row")
+
+
+
+ 
+ clin<-clinic
+
+
+  
+ ### add mutation information.
+ ## create a clinical percentage.
+  full.dn4$mutation<-NA
+  ## stratify only on ExSeq data.
+ ##only show the cluster proportions if WES is available.
+  ###
+  ##BCL6
+ full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==1 & full.dn4$TP53==0 & full.dn4$BCL2==0 & full.dn4$SGK1==0& full.dn4$CD79B==0 & full.dn4$MYD88.L265P==0 & full.dn4$EZH2==0)]<-"BCL6+"
+  ##BCL6+CD79b+
+ full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==1 & full.dn4$TP53==0 & full.dn4$BCL2==0 & full.dn4$SGK1==0& full.dn4$CD79B==1 & full.dn4$MYD88.L265P==0 & full.dn4$EZH2==0)]<-"BCL6+CD79b+"
+
+  ##TP53
+ full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==1 & full.dn4$BCL2==0 & full.dn4$SGK1==0& full.dn4$CD79B==0 &full.dn4$MYD88.L265P==0 & full.dn4$EZH2==0)]<-"TP53+"
+ ## TP53+SGK1+
+ full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==1 & full.dn4$BCL2==0 & full.dn4$SGK1==1& full.dn4$CD79B==0 &full.dn4$MYD88.L265P==0 & full.dn4$EZH2==0)]<-"TP53+SGK1+"
+ ## TP53+CD79b+
+  full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==1 & full.dn4$BCL2==0 & full.dn4$SGK1==0& full.dn4$CD79B==1 &full.dn4$MYD88.L265P==0 & full.dn4$EZH2==0)]<-"TP53+CD79b+"
+#TP53+CD79b+MYD88+
+  full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==1 & full.dn4$BCL2==0 & full.dn4$SGK1==0& full.dn4$CD79B==1 &full.dn4$MYD88.L265P==1 & full.dn4$EZH2==0)]<-"TP53+CD79b+MYD88.L265P+"
+ 
+
+ ## BCL2
+  full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==0 & full.dn4$BCL2==1 & full.dn4$SGK1==0& full.dn4$CD79B==0& full.dn4$MYD88.L265P==0 & full.dn4$EZH2==0)]<-"BCL2+"
+ ## BCL2+BCL6+
+  full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==1 & full.dn4$TP53==0 & full.dn4$BCL2==1 & full.dn4$SGK1==0& full.dn4$CD79B==0& full.dn4$MYD88.L265P==0 & full.dn4$EZH2==0)]<-"BCL2+BCL6+"
+ ## BCL2+BCL6+EZH2+
+  full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==1 & full.dn4$TP53==0 & full.dn4$BCL2==1 & full.dn4$SGK1==0& full.dn4$CD79B==0& full.dn4$MYD88.L265P==0 & full.dn4$EZH2==1)]<-"BCL2+BCL6+EZH2+"
+ # BCL2+EZH2+
+  full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==0 & full.dn4$BCL2==1 & full.dn4$SGK1==0& full.dn4$CD79B==0& full.dn4$MYD88.L265P==0 & full.dn4$EZH2==1)]<-"BCL2+EZH2+"
+
+
+ ## SGK1
+  full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==0 & full.dn4$BCL2==0 & full.dn4$SGK1==1 & full.dn4$CD79B==0& full.dn4$MYD88.L265P==0 & full.dn4$EZH2==0)]<-"SGK1+"
+ 
+## CD79B
+  full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==0 & full.dn4$BCL2==0 & full.dn4$SGK1==0 & full.dn4$CD79B==1& full.dn4$MYD88.L265P==0 & full.dn4$EZH2==0)]<-"CD79B+"
+ 
+
+ ## double positives
+  ## BCL6+TP53+
+ full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==1 & full.dn4$TP53==1 & full.dn4$BCL2==0 & full.dn4$SGK1==0& full.dn4$CD79B==0&full.dn4$MYD88.L265P==0 & full.dn4$EZH2==0)]<-"BCL6+TP53+"
+ 
+ 
+  ## BCL2+CD79B+
+ full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==0 & full.dn4$BCL2==1 & full.dn4$SGK1==0& full.dn4$CD79B==1&full.dn4$MYD88.L265P==0& full.dn4$EZH2==0)]<-"BCL2+CD79B+"
+
+
+ 
+ full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==0 & full.dn4$BCL2==0 & full.dn4$SGK1==0& full.dn4$CD79B==0 full.dn4$MYD88.L265P==0 & full.dn4$EZH2==0 |full.dn4$WES.available==FALSE & full.dn4$BCL6==0 & full.dn4$TP53==0 & full.dn4$BCL2==0 & full.dn4$SGK1==0& full.dn4$CD79B==0&full.dn4$MYD88.L265P==0 & full.dn4$EZH2==0)]<-"none"
+
+  ## MYD88.L265P+
+ full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==0 & full.dn4$BCL2==0 & full.dn4$SGK1==0& full.dn4$CD79B==0&full.dn4$MYD88.L265P==1& full.dn4$EZH2==0)]<-"MYD88.L265P+"
+
+ ## EZH2
+  full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==0 & full.dn4$BCL2==0 & full.dn4$SGK1==0& full.dn4$CD79B==0&full.dn4$MYD88.L265P==0& full.dn4$EZH2==1)]<-"EZH2+"
+
+ ##BCL2+BCL6+EZH2+
+ full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==1 & full.dn4$TP53==0 & full.dn4$BCL2==1 & full.dn4$SGK1==0& full.dn4$CD79B==0&full.dn4$MYD88.L265P==0& full.dn4$EZH2==1)]<-"BCL2+BCL6+EZH2+"
+ 
+
+ 
+
+ 
+  
+ mut.perc<- table(full.dn4[,"unsup.subcommunity"],
+	full.dn4[,"mutation"])%>%as.data.frame.matrix()
+
+  mut.perc<-100*mut.perc/(1+rowSums(mut.perc))
+ ##adding MYD88.L265P
+  mm<-as.data.frame(matrix(0,nrow=37,ncol=ncol(mut.perc)))
+  rownames(mm)<-rownames(ors)
+  colnames(mm)<-colnames(mut.perc)
+  mm[match(rownames(mut.perc),rownames(mm)),]<-mut.perc
+
+  muts<-rowAnnotation(Mutations = anno_barplot(mm[,which(colnames(mm)!="none")], 
+	gp = gpar(fill = c(
+	#BCL2+	
+	"thistle1",
+	#BCL2+BCL6+EZH2"
+	"grey79",
+	#BCL2+EZH2+
+	"aquamarine4",
+	#BCL6+CD79b+
+	"purple4",
+	#CD79b
+	"khaki",
+	#EZH2
+	"black",
+	#MYD88
+	"hotpink",
+	##TP53"
+ 	"dodgerblue",
+	##TP53 CD79b
+	"cyan2",
+	#TP53+CD79B+MYD88
+	"darkorchid2",
+	#TP53+SGK+
+	"cadetblue3")), 
+    bar_width = 1, width = unit(2, "cm")))
+
+   size+hans+reArrange+heats+muts+rowAnnLabeled
+
+ 
+ ## IPI categorical variable.
+  full.dn4$IPI.category<-"Low IPI"
+   full.dn4$IPI.category[which(full.dn4$IPI>2)]<-"High IPI"
+
+ ipi.perc<- table(full.dn4$unsup.subcommunity,full.dn4$IPI.category)%>%as.data.frame.matrix()
+  ipi.perc<-100*ipi.perc/(1+rowSums(ipi.perc))
+ write.csv(ipi.perc,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure1-lowCD20-revision/comprehensive-cohort-heatmap-Figure1-mutations/IPI.scores.csv")
+
+   require(circlize)
+    col_fun<-colorRamp2(c(5,40,75),c("blue","white","red"))
+
+  ipis <- HeatmapAnnotation("High IPI"=ipi.perc[,"High IPI"],
+	 which="row",
+	col=list("High IPI"=col_fun),
+	 annotation_width=unit(c(1, 4), "cm"), 
+	gap=unit(1, "mm"),
+	annotation_legend_param=list(title_position="topcenter",
+	labels=c("5%","40%","75%"),
+	at=c(5,40,75)))
+ lgd = Legend(at = colnames(mm),ncol=2,
+	 title = "Mutations",
+	type="points", 
+	title_position="topcenter",
+	size=unit(5,"mm"),
+	legend_gp = gpar(col =  c(
+	#BCL2+	
+	"thistle1",
+	#BCL2+BCL6+EZH2"
+	"grey79",
+	#BCL2+EZH2+
+	"aquamarine4",
+	#BCL6+CD79b+
+	"purple4",
+	#CD79b
+	"khaki",
+	#EZH2
+	"black",
+	#MYD88
+	"hotpink",
+	##TP53"
+ 	"dodgerblue",
+	##TP53 CD79b
+	"cyan2",
+	#TP53+CD79B+MYD88
+	"darkorchid2",
+	#TP53+SGK+
+	"cadetblue3")))
+ lgd.or = Legend(at = c("Non-GCB enriched (p<0.01)","GCB enriched (p<0.01)"),ncol=1,
+	 title = "HANS Odds Ratio",
+	type="points", 
+	title_position="topcenter",
+	size=unit(5,"mm"),
+	legend_gp = gpar(col =  c("blue",
+	"red")))
+
+ ## MYC.Rearrange and MYC Gain legend.
+ lgd.myc = Legend(at = "(OR>2,p<0.001)",ncol=1,
+	 title = paste0("Double expressor (",expression(chi^2),")"),
+	type="points", 
+	title_position="topcenter",
+	size=unit(5,"mm"),pch=8,
+	legend_gp = gpar(col =  c("black")))
+
+  ht<-draw(size+hans+ipis+heats+muts+rowAnn+reArrange,annotation_legend_list=list(lgd,lgd.or,lgd.myc))
+  decorate_annotation("HANS",{
+	grid.lines(1, c(1,37), gp = gpar(lty = 2),
+        default.units = "native")
+	popViewport()
+	}) 
+  #savePlot(file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure1-lowCD20-revision/comprehensive-cohort-heatmap-Figure1-mutations/Figure1.subCommunity.clinical.mutations.stackedBarplot.myc.png")
+
+ 
+ ht2<-draw(size+hans+ipis+reArrange+heats+muts+rowAnnLabeled,annotation_legend_list=list(lgd,lgd.or,lgd.myc))
+  decorate_annotation("HANS",{
+	grid.lines(1, c(1,37), gp = gpar(lty = 2),
+        default.units = "native")
+	popViewport()
+	}) 
+  # savePlot(file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure1-lowCD20-revision/comprehensive-cohort-heatmap-Figure1-mutations/Figure2.subCommunity.clinical.mutations.stackedBarplot.labeled.doubleExpressor.png")
+
+ ### individual mutations at the class level
+  patientMutationOddsRatio<-function(mutation=NULL){
+   ### odds ratio of mutations
+ ta<-as.data.frame.matrix(table(full.dn4[which(full.dn4$WES.available==TRUE),mutation],full.dn4$COO[which(full.dn4$WES.available==TRUE)]))+100
+  dd<-epitools::oddsratio(as.matrix(ta))
+   return(dd$measure[2,])  
+  }
+
+ mut.or<-sapply(c("TP53",
+	"CD79B",
+	"BCL2",
+	"BCL6",
+	"SGK1",
+	"MYD88.L265P",
+	"NOTCH1",
+	"NOTCH2",
+	"EZH2",
+	"X9p24.indicator"),function(x) patientMutationOddsRatio(mutation=x))
+
+ print( log(mut.or))
+
+ mut.or2<-as.data.frame(t(mut.or))
+ mut.or2$mutation<-rownames(mut.or2)
+ ## sums the phenotype totals per patient across a clinical feature
+ mut.or2$mutation<-gsub("X9p24.indicator","Chr.9p24 gain",mut.or2$mutation)
+ mut.or2$mutation<-factor(mut.or2$mutation,levels=mut.or2$mutation[order(mut.or2$estimate)])
+
+ ## confidence intervals. (univariate).
+ print(mut.or2)
+
+  ggplot(mut.or2,aes(x=mutation,y=log(1+estimate)+0.1))+geom_point()+geom_errorbar(aes(ymin=log(1+lower)+0.1,ymax=log(1+upper)+0.1),width=0.2,size=0.7)+theme_ipsum(base_family="Arial",base_size=14)+theme(axis.text.x = element_text(angle = 45, hjust = 1))+geom_hline(yintercept=1,col="red",linetype="dashed")+ylab("Log-Odds for Non-GCB")+xlab("Mutation")
+  # ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-mutation-analysis/Specific.mutation.nonGCB.odds.ratio.onlyWES.available.png")
+
+
+clinic$X9p24.gain.status[which(is.na(clinic$X9p24.gain.status))]<-0
+
+
+ ## sub-cluster empirical Bayesian model.
+  mutation<-data.frame(ROIID=clinic$Run.ID,
+	case=clinic$Case_ID,
+	TP53=clinic$TP53,
+	SGK1=clinic$SGK1,
+	CD79B=clinic$CD79B,
+	BCL6=clinic$BCL6,
+	BCL2=clinic$BCL2,
+	MYD88.L265P=clinic$MYD88.L265P,
+	MYC=clinic$MYC,
+	NOTCH1=clinic$NOTCH1,
+	NOTCH2=clinic$NOTCH2,
+	EZH2=clinic$EZH2,
+	X9p24=ifelse( clinic$X9p24.gain.status!=0,1,0),
+	HANS=clinic[,"Cell.of.origin..HANS."])
+	
+
+   ##case level model summary.
+   mutation<-mutation[!duplicated(mutation$case),]
+  tp53.design<-model.matrix(~TP53+SGK1+CD79B+BCL6+BCL2+MYD88.L265P+HANS+NOTCH1+NOTCH2+EZH2+X9p24,mutation)
+  #rownames(tp53.design)<-mutation$ROIID
+  rownames(tp53.design)<-mutation$case
+  jointDesign<-as.data.frame(tp53.design)
+      jointDesign[,"TP53.CD79B"]<-jointDesign[,"TP53"]*jointDesign[,"CD79B"]
+      jointDesign[,"BCL6.CD79B"]<-jointDesign[,"BCL6"]*jointDesign[,"CD79B"]
+    jointDesign[,"BCL6.BCL2.EZH2"]<-jointDesign[,"BCL6"]*jointDesign[,"BCL2"]*jointDesign[,"EZH2"]
+ jointDesign<-jointDesign[,which(colnames(jointDesign)!="BCL6")]
+ 
+
+  mutFit<-empiricalFitMutationCaseLevel(full.dn4=full.dn4,design=jointDesign,
+toDrop=c("TREG_5",
+	"TREG_4","TREG_1","TREG_3","TREG_2","TREG_6","Endothelial"),
+	phenotypeCommunity="unsup.subcommunity")
+ 
+
+## case level.
+## bubble plot 
+ ## MYD88
+   mutData<-data.frame(topTable(mutFit,coef=6)[1,])
+ ## NOTCH2
+   mutData<-rbind(mutData,topTable(mutFit,coef=9)[1:2,])
+ ## EZH2
+    mutData<-rbind(mutData,topTable(mutFit,coef=10)[1,])
+ ## BCL6+BCL2+EZH2
+    mutData<-rbind(mutData,topTable(mutFit,coef=14)[1,])
+ 
+ 
+ mutData$mutation<-c( "MYD88.L265P+",
+	rep("NOTCH2+",2),
+	"EZH2+",
+	rep("BCL6+BCL2+EZH2+",1))
+	mutData$phenotype=rownames(mutData)
+	
+  require(hrbrthemes)
+ phenoColors<-getPhenoColors(full.dn4)
+  mutData$phenotype<-factor(mutData$phenotype)
+   mutData$mutation<-factor(mutData$mutation)
+   myCol<-phenoColors[levels(mutData$phenotype)]
+    myCol2<-getMutationColors()[levels(mutData$mutation)]
+  ggplot(mutData,aes(x=logFC,y=phenotype,size=-log(adj.P.Val),fill=mutation))+
+	geom_point(alpha=0.95,shape=21,color='black')+
+	scale_fill_manual(values=myCol2)+
+	theme_ipsum(base_family="Arial")+
+	theme(axis.text.x=element_text(size=15),axis.text.y=element_text(size=15))+
+	geom_vline(xintercept=0,col='red',linetype="dashed")+xlab("logFC (%)")
+ ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-mutation-analysis/final-figure-mutational-specific-mutations/Significant.mutation.subCommunity.caseLevel.png")
+ 
+
+
+
+```
+
+

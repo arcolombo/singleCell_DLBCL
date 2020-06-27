@@ -1,0 +1,1373 @@
+---
+title: "Imaging mass cytometry reveals tumor and immune spatial and phenotypic clusters associated with clinical outcomes in diffuse large B cell lymphoma (DLBCL)"
+author: "Anthony Colombo+,Monirath Hav+, Erik Gerdtsson"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+# {.tabset}  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup {.tabset}
+
+
+### Helper Functions
+```{r, eval=FALSE}
+zScorePatientExpression<-function(full.dn4=NULL,markers=NULL,ROIID.column=NULL){
+  X3<-full.dn4[,c(markers,ROIID.column)]%>%group_by(ROIID)%>%summarise_all(funs(sd))%>%data.frame
+  X2<-full.dn4[,c(markers,ROIID.column)]%>%group_by(ROIID)%>%summarise_all(funs(mean))%>%data.frame
+   ###
+   z<-full.dn4
+  for(cl in unique(full.dn4$ROIID)){
+   for(mark in colnames(X2)[-1]){
+  z[which(z$ROIID==cl),which(colnames(z)==mark)]<- ( z[which(z$ROIID==cl),which(colnames(z)==mark)]-X2[which(X2$ROIID==cl),which(colnames(X2)==mark)])/(X3[which(X3$ROIID==cl),which(colnames(X3)==mark)])
+   }
+ }
+ return(z)
+ }
+
+### make JoyPlot
+   makeJoyPlot<-function(z,marker=NULL){
+   ltlist<-list()
+     for(roi in unique(z$ROIID)){
+      lt = data.frame(density(z[which(z$ROIID==roi),marker])[c("x","y")])
+    ltlist[[(length(ltlist)+1)]]<-lt
+     }
+    marker1= rowAnnotation(Z= anno_joyplot(ltlist, width = unit(4, "cm"), 
+    gp = gpar(fill = color_clusters),
+	 transparency = 0.35)) 
+  marker1@anno_list[[1]]@name <-gsub("Cell_","",marker)
+  names(marker1@anno_list)<-gsub("Cell_","",marker)
+    return(marker1)
+   }
+
+
+ 
+metaClusterExperiment<-function(dn4=NULL,markers=NULL,plotPCA=FALSE){
+   
+   dn4$casePheno<-NA
+   require(Rphenograph)
+   for(roi in unique(dn4$ROIID)){
+	message(roi)
+     myroi<-subset(dn4,dn4$ROIID==roi)
+     graph<-Rphenograph(myroi[,markers],k=45)
+     myroi[,"casePheno"]<-membership(graph[[2]])
+     dn4$casePheno[match(myroi$uniqueLabel,dn4$uniqueLabel)]<-myroi$casePheno
+     }
+  ## grab all the meta clusters.
+  ErikMeta=dn4[,
+	c(markers,
+	"ROIID",
+	"casePheno")] %>% group_by(ROIID,casePheno) %>% 
+       dplyr::summarise_all(funs(median)) %>%data.frame
+     
+          ##Levine used k=15 for meta.
+     erikPheno<- Rphenograph(ErikMeta[,c(markers)], k = 15)
+     phenograph_cluster_meta<- factor(membership(erikPheno[[2]]))
+     table(phenograph_cluster_meta)
+     ErikMeta=cbind(ErikMeta,phenograph_cluster_meta)
+     ### plot PCA, label each case.  COO,  status.  ## 
+
+   myLocal=left_join(dn4, ErikMeta[,c("ROIID",
+	"casePheno","phenograph_cluster_meta")], by = c("ROIID", "casePheno"))
+
+  dn4[,"phenograph_cluster_meta"]<-NA
+  dn4[match(myLocal$uniqueLabel,dn4$uniqueLabel),"phenograph_cluster_meta"]<-myLocal[,"phenograph_cluster_meta"]
+
+  plot_clustering_heatmap_wrapper(expr=ErikMeta[,c(markers)], 
+  cell_clustering=ErikMeta[,"phenograph_cluster_meta"],
+  useMedians=FALSE,
+  useQuantiles=TRUE,
+  color_clusters=NULL)
+ return(dn4)
+}
+
+
+ 
+plot_clustering_heatmap_wrapper<-function(expr=NULL, 
+  cell_clustering=NULL, cluster_merging = NULL,useMedians=TRUE,useQuantiles=FALSE,
+color_clusters=NULL){
+  ## cluster_merging should be character merging vector of 29 or so clusters. this is input from the ANNOTATION object.  not a matched object level.
+   expr<-as.matrix(expr)
+  if(useQuantiles==TRUE){
+  ##max min normalization
+  library(matrixStats)
+  rng <- colQuantiles(expr, probs = c(0.001, 0.999))
+  expr01 <- t((t(expr) - rng[, 1]) / (rng[, 2] - rng[, 1]))
+  expr01[expr01 < 0] <- 0
+  expr01[expr01 > 1] <- 1
+  }else{
+   expr01<-expr 
+
+  }
+
+ if(is.null(color_clusters)==TRUE){
+  color_clusters <- c("#DC050C", "#FB8072", "#1965B0", "#7BAFDE", "#882E72", 
+  "#B17BA6", "#FF7F00", "#FDB462", "#E7298A", "#E78AC3", 
+  "#33A02C", "#B2DF8A", "#55A1B1", "#8DD3C7", "#A6761D", 
+  "#E6AB02", "#7570B3", "#BEAED4", "#666666", "#999999", 
+  "#aa8282", "#d4b7b7", "#8600bf", "#ba5ce3", "#808000", 
+  "#aeae5c", "#1e90ff", "#00bfff", "#56ff0d", "#ffff00")
+ }
+
+  # Calculate the median expression 
+  library(dplyr)
+  expr_median <- data.frame(expr, cell_clustering = cell_clustering) %>%
+    group_by(cell_clustering) %>% 
+    summarize_all(funs(median))
+ if(useMedians==TRUE){
+  expr01_median <- data.frame(expr01, cell_clustering = cell_clustering) %>%
+    group_by(cell_clustering) %>% 
+    summarize_all(funs(median))
+   }else{
+   expr01_median <- data.frame(expr01, cell_clustering = cell_clustering) %>%
+    group_by(cell_clustering) %>% 
+    summarize_all(funs(mean))
+ }
+  # Calculate cluster frequencies
+  clustering_table <- as.numeric(table(cell_clustering))
+  
+  # This clustering is based on the markers that were used for the main clustering
+  d <- dist(expr_median[, colnames(expr)], method = "euclidean")
+  cluster_rows <- hclust(d, method = "average")
+   expr_heat <- as.matrix(expr01_median[, colnames(expr01)])
+  rownames(expr_heat) <- expr01_median$cell_clustering
+ 
+  labels_row <- paste0(rownames(expr_heat), " (", 
+    round(clustering_table / sum(clustering_table) * 100, 2), "%)")
+  labels_col <- colnames(expr_heat)
+  
+  # Row annotation for the heatmap
+  annotation_row <- data.frame(cluster = factor(expr01_median$cell_clustering))
+  rownames(annotation_row) <- rownames(expr_heat)
+  
+  color_clusters <- color_clusters[1:nlevels(annotation_row$cluster)]
+  names(color_clusters) <- levels(annotation_row$cluster)
+  annotation_colors <- list(cluster = color_clusters)
+  annotation_legend <- FALSE
+  
+  if(!is.null(cluster_merging)){
+    
+    annotation_row$cluster_merging <- factor(cluster_merging)
+    color_clusters <- color_clusters[1:nlevels(factor(cluster_merging))]
+    names(color_clusters) <- levels(factor(cluster_merging))
+    annotation_colors$cluster_merging <- color_clusters
+    annotation_legend <- TRUE
+  }
+  
+  # Colors for the heatmap
+  library(RColorBrewer);library(pheatmap)
+  color <- colorRampPalette(rev(brewer.pal(n = 9, name = "RdYlBu")))(100)
+  
+  pheatmap(expr_heat, color = color, 
+    cluster_cols = FALSE, cluster_rows = cluster_rows, 
+    labels_col = labels_col, labels_row = labels_row, 
+    display_numbers = TRUE, number_color = "black", 
+    fontsize = 12, fontsize_number = 12,
+    annotation_row = annotation_row, annotation_colors = annotation_colors,
+    annotation_legend = annotation_legend)
+  
+}
+
+
+ setUpMarkers<-function(){
+ hd.lineage<-c( "CD11b",
+                       "CD11c",
+                       "CD14",
+                       "CD15",
+                       "CD16",
+                       "CD206",
+			"CD20",
+			"CD30",
+			"CD34",
+			"CD3",
+			"CD45RA",
+			"CD45RO",
+			"CD4",
+			"CD68",
+			"CD8a",
+                       "FOXP3",
+			"EphrinB2",
+			"Eccentricity.norm",
+			"Area.norm",
+			"DNA1",
+			"DNA2") 
+ hd.induc<-c("X41BB",
+		"CCR4",
+		"CXCR3",
+		"CXCR5",
+		"Caspase3",
+		"GATA3",
+		"HLAABC",
+		"HLADR",
+		"ICOS",
+ 		"IDO",
+		"Ki67",
+		"LAG3",
+		"NKG2D",
+		"PD1",
+		"PDL1",
+		"TIM3",
+		"Tbet")
+
+  lineage_markers<-c( "Cell_BCL2",
+                       "Cell_BCL6",
+                       "Cell_CD20",
+                       "Cell_CD206",
+                       "Cell_CD3",
+                       "Cell_CD30",
+                       "Cell_CD31",
+                       "Cell_CD4",
+                       "Cell_CD45RA",
+                       "Cell_CD45RO",
+                       "Cell_CD68" ,
+                       "Cell_CD8",
+                       "Cell_EphrinB2",
+                       "Cell_FOXP3",
+                       "Cell_HLADR" )
+   induc<-c("Cell_C",
+            "Cell_CCR4",
+            "Cell_CD134",
+            "Cell_CXCR3",
+            "Cell_Granzym",
+            "Cell_ICOS",
+            "Cell_Ki67",
+            "Cell_Lag3",
+            "Cell_PD1",
+            "Cell_PDL1",
+            "Cell_PDL2",
+            "Cell_Tbet",
+            "Cell_Tim3",
+            "Cell_Vimentin",
+            "Cell_Vista",
+            "Cell_p",
+		"Cell_DNA",
+		"Cell_DNA2")
+  
+  myl<-list(hd.lineage,	
+	hd.induc,
+	lineage_markers,
+	induc)
+	names(myl)<-c("hd.lineage","hd.induc","lineage_markers","induc")
+ 
+ return(myl)
+   
+ }
+
+ randomSampleUniqueLabel<-function(which.ROIID=NULL,N=NULL,full.dn4=NULL){
+   dat<-subset(full.dn4,ROIID==which.ROIID)
+   ids<-sample(dat$uniqueLabel,N,replace=FALSE) 
+  return(ids)
+ }
+
+
+
+integrateHD.DLBCL<-function(hd=NULL,dlbcl=NULL){
+  load("~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.filtered.RData")
+ ## for each marker use a tertile break point to identify phenotypes as a preliminary pass.
+   load("~/Documents/imageAnalysis/steidl/steidl-spatialAnalysis9-11/fold-revised-10-5/dn4.final.foldRevised.RData")
+
+  dlbcl.feats<-c("Cell_CCR4",
+	"Cell_CD206","Cell_CD20","Cell_CD30","Cell_CD3",
+	"Cell_CD45RA","Cell_CD45RO","Cell_CD4","Cell_CD68","Cell_CD8",
+	"Cell_CXCR3","Cell_DNA","Cell_DNA2","Cell_EphrinB2","Cell_FOXP3","Cell_HLADR",
+	"Cell_ICOS","Cell_Ki67","Cell_Lag3","Cell_PD1","Cell_PDL1","Cell_Tim3",
+	"Cell_Tbet","Area","ROIID","uniqueLabel")
+  dlbcl.sub<-full.dn4[,dlbcl.feats]
+  dlbcl.sub$experiment<-"DLBCL"
+  colnames(dlbcl.sub)<-gsub("Cell_","",colnames(dlbcl.sub))
+ colnames(dlbcl.sub)[which(colnames(dlbcl.sub)=="Lag3")]<-"LAG3"
+  colnames(dlbcl.sub)[which(colnames(dlbcl.sub)=="Tim3")]<-"TIM3"
+   colnames(dlbcl.sub)[which(colnames(dlbcl.sub)=="DNA")]<-"DNA1"
+   colnames(dlbcl.sub)[which(colnames(dlbcl.sub)=="CD8")]<-"CD8a"
+  hd.feats<-c("CCR4",
+	"CD206","CD20","CD30","CD3","CD45RA","CD45RO","CD4","CD68",
+	"CD8a","CXCR3","DNA1","DNA2","EphrinB2","FOXP3","HLADR",
+	"ICOS","Ki67","LAG3","PD1","PDL1","TIM3","Tbet","Area","ROIID","uniqueLabel")
+  hd<-dn4[,hd.feats]
+  hd$experiment<-"HD"
+  all(colnames(dlbcl.sub)==colnames(hd))
+   integ<-rbind(dlbcl.sub,hd)
+  
+  ## patient means, patient SD,  experiment means , experiment SD
+   markers<-c("CCR4",
+	"CD206","CD20","CD30","CD3","CD45RA","CD45RO","CD4","CD68",
+	"CD8a","CXCR3","DNA1","DNA2","EphrinB2","FOXP3","HLADR",
+	"ICOS","Ki67","LAG3","PD1","PDL1","TIM3","Tbet","Area")
+  X3<-integ[,c(markers,"ROIID")]%>%group_by(ROIID)%>%summarise_all(funs(sd))%>%data.frame
+  X2<-integ[,c(markers,"ROIID")]%>%group_by(ROIID)%>%summarise_all(funs(mean))%>%data.frame
+  X3_1<-integ[,c(markers,"experiment")]%>%group_by(experiment)%>%summarise_all(funs(sd))%>%data.frame
+  X2_1<-integ[,c(markers,"experiment")]%>%group_by(experiment)%>%summarise_all(funs(mean))%>%data.frame
+   ###
+   z<-integ
+  for(cl in unique(integ$ROIID)){
+  message(cl)
+   for(mark in colnames(X2)[-1]){
+  means<-(z[which(z$ROIID==cl),which(colnames(z)==mark)]-X2_1[match(unique(z$experiment[which(z$ROIID==cl)]), X2_1$experiment),which(colnames(X2_1)==mark)])
+  pool.sd<-X3_1[match(unique(z$experiment[which(z$ROIID==cl)]), X3_1$experiment),which(colnames(X3_1)==mark)]
+ z[which(z$ROIID==cl),which(colnames(z)==mark)]<-means/pool.sd
+   }
+ }
+ z2<-zScorePatientExpression(full.dn4=z,
+	markers=which(colnames(z)%in%markers),
+	ROIID.column=which(colnames(z)=='ROIID'))
+  z2[,markers]<-scale(z2[,markers]) 
+  return(z2)
+}
+
+
+
+plotIntegrationPlots<-function(integ=NULL){
+
+ 
+   z<-integ
+   z<-z[!is.nan(z$DNA1),]
+     z<-z[!is.nan(z$DNA2),]
+   d<-data.frame(ROIID=unique(z$ROIID))
+   # names(roiCol)<-d[,1]
+  ### add ROI annotation.
+ d$experiment[match(z$ROIID,d$ROIID)]<-z$experiment 
+ rois<-HeatmapAnnotation(experiment=(d$experiment),
+	which="row")
+
+     cd20<-makeJoyPlot(z,marker="CD20")
+   cd206<-makeJoyPlot(z,marker="CD206")
+    CD3<-makeJoyPlot(z,marker="CD3")
+   CD4<-makeJoyPlot(z,marker="CD4")
+   CD45RA<-makeJoyPlot(z,marker="CD45RA")
+   cd45ro<-makeJoyPlot(z,marker="CD45RO")
+   cd68<-makeJoyPlot(z,marker="CD68")
+    cd8<-makeJoyPlot(z,marker="CD8a")
+   foxp3<-makeJoyPlot(z,marker="FOXP3")
+   hladr<-makeJoyPlot(z,marker="HLADR")
+   ccr4<-makeJoyPlot(z,marker="CCR4")
+    cxcr3<-makeJoyPlot(z,marker="CXCR3")
+    icos<-makeJoyPlot(z,marker="ICOS")
+   ki<-makeJoyPlot(z,marker="Ki67")
+   lag<-makeJoyPlot(z,marker="LAG3")
+   pd1<-makeJoyPlot(z,marker="PD1")
+   pdl1<-makeJoyPlot(z,marker="PDL1")
+    tim3<-makeJoyPlot(z,marker="TIM3")
+   tbet<-makeJoyPlot(z,marker="Tbet")
+    eph<-makeJoyPlot(z,marker="EphrinB2") 
+     cd30<-makeJoyPlot(z,marker="CD30") 
+      dna1<-makeJoyPlot(z,marker="DNA1") 
+      dna2<-makeJoyPlot(z,marker="DNA2") 
+
+  draw(cd20+cd206+CD3+CD4+CD45RA+cd45ro+cd68+cd8+rois)
+ # savePlot(file="integration.zscores.expression.png")
+ draw(foxp3+hladr+ccr4+cxcr3+icos+ki+lag+pd1+pdl1+tim3+rois)
+  #savePlot(file="integration.zscores.expression2.png")
+  draw(tbet+eph+cd30+dna1+dna2+rois)
+  # savePlot(file="integration.zscores.expression3.png")
+
+}
+
+
+
+seuratDownSampleIntegrationEvaluation<-function(downSample=TRUE){
+  
+ load("~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.filtered.RData")
+ ## for each marker use a tertile break point to identify phenotypes as a preliminary pass.
+   load("~/Documents/imageAnalysis/steidl/steidl-spatialAnalysis9-11/fold-revised-10-5/dn4.final.foldRevised.RData")
+  z<-integrateHD.DLBCL()
+	z<-z[!grepl("Tonsil_",z$ROIID),]
+	z<-z[!grepl("Placenta_",z$ROIID),]
+	z<-z[!is.na(z$DNA1),]
+	z<-z[!is.na(z$DNA2),]
+	
+  ### evaluate the integration.  use seurat.
+  if(downSample==TRUE){
+  hd_ids<-sapply(unique(z[which(z$experiment!="DLBCL"),"ROIID"]),function(x) randomSampleUniqueLabel(which.ROIID=x,N=1900,full.dn4=z[which(z$experiment!="DLBCL"),]))
+   hd_ids<-as.vector(hd_ids)
+  hd_ids2<-sapply(unique(z[which(z$experiment=="DLBCL"),"ROIID"]),function(x) randomSampleUniqueLabel(which.ROIID=x,N=1900,full.dn4=z[which(z$experiment=="DLBCL"),]))
+  hd_ids2<-as.vector(hd_ids2)
+   downSamp<-z[match(c(hd_ids2,hd_ids),z$uniqueLabel),]
+  }else{
+ 	downSamp<-z
+  }
+  	 rownames(downSamp)<-downSamp$uniqueLabel
+	raw<-t(downSamp[,1:23])
+    ## create summarized experiment
+ 	pbmc <- CreateSeuratObject(counts =raw )	
+	groups<-downSamp$experiment
+	pbmc <- AddMetaData(object = pbmc, metadata = downSamp$experiment, col.name = "tech")
+	pbmc <- ScaleData(pbmc, verbose = FALSE)
+	## the VST will error, choose mvp or disp
+	pbmc <- FindVariableFeatures(pbmc, selection.method = "disp", nfeatures =15)
+	pbmc <- RunPCA(pbmc, npcs = 10, verbose = FALSE)
+	#pbmc <- RunUMAP(pbmc, reduction = "pca", dims = 1:20)
+	#pbmc <- FindNeighbors(pbmc, dims = 1:10)
+	#pbmc <- FindClusters(pbmc, resolution = 0.5)
+	#p1 <- DimPlot(pbmc, reduction = "pca", group.by = "tech")
+	#normalDat<-GetAssayData(object = pbmc, slot = "scale.data")
+	#normalDat<-t(normalDat)
+
+  return(pbmc)
+  }
+
+
+
+
+metaClusterPhenotype<-function(dn4=NULL,phenotype=NULL,myPheno=NULL,markers=NULL,plotPCA=FALSE,k2=15){
+ #myPheno is the column for the phenotype.
+    set.seed(1234)
+   erik<-subset(dn4,dn4[,myPheno]==phenotype)
+  ## subMeta holds the casePheno 
+  dn4[,paste0(phenotype,"_subMeta")]<-NA
+    erik[,paste0(phenotype,"_subMeta")]<-NA
+ require(Rphenograph)
+   roiData<-as.data.frame.matrix(table(erik$ROIID,erik[,myPheno]))
+
+   for(roi in rownames(roiData)[which(roiData[,phenotype]>45)]){
+     myroi<-subset(erik,erik$ROIID==roi)
+     graph<-Rphenograph(myroi[,markers],k=45)
+     myroi[,paste0(phenotype,"_subMeta")]<-membership(graph[[2]])
+    dn4[match(myroi$uniqueLabel,dn4$uniqueLabel),paste0(phenotype,"_subMeta")]<-membership(graph[[2]])
+     erik[match(myroi$uniqueLabel,erik$uniqueLabel),paste0(phenotype,"_subMeta")]<-membership(graph[[2]])
+   }
+
+  ErikMeta=erik[,
+	c(markers,
+	"ROIID",
+	paste0(phenotype,"_subMeta"))] %>% group_by(ROIID,.dots=paste0(phenotype,"_subMeta")) %>% 
+       dplyr::summarise_all(funs(median)) %>%data.frame
+     
+          ##Levine used k=15 for meta.
+     erikPheno<- Rphenograph(ErikMeta[,c(markers)], k = k2)
+     subphenograph_cluster_meta<- factor(membership(erikPheno[[2]]))
+     table(subphenograph_cluster_meta)
+     ErikMeta=cbind(ErikMeta, subphenograph_cluster_meta)
+     ### plot PCA, label each case.  COO,  status.  ## 
+   if( any(colnames(erik)== paste0(phenotype,"_subphenograph_cluster_meta"))){
+     erik<-erik[,which(colnames(erik)!= paste0(phenotype,"_subphenograph_cluster_meta"))]
+ } 
+
+   myLocal=left_join(erik, ErikMeta[,c("ROIID",paste0(phenotype,"_subMeta"),"subphenograph_cluster_meta")], by = c("ROIID"))
+
+  colnames(myLocal)[which(colnames(myLocal)=="subphenograph_cluster_meta")]<-paste0(phenotype,"_subphenograph_cluster_meta") 
+  dn4[,paste0(phenotype,"_subphenograph_cluster_meta")]<-NA
+  dn4[match(myLocal$uniqueLabel,dn4$uniqueLabel),paste0(phenotype,"_subphenograph_cluster_meta")]<-myLocal[,which(colnames(myLocal)==paste0(phenotype,"_subphenograph_cluster_meta"))]
+
+  plot_clustering_heatmap_wrapper(expr=ErikMeta[,c(markers)], 
+  cell_clustering=ErikMeta[,"subphenograph_cluster_meta"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=NULL)
+ return(dn4)
+}
+
+
+metaClusterExperiment<-function(dn4=NULL,markers=NULL,plotPCA=FALSE){
+   ##metaclusters across ROI.
+   dn4$casePheno<-NA
+   require(Rphenograph)
+   for(roi in unique(dn4$ROIID)){
+	message(roi)
+     myroi<-subset(dn4,dn4$ROIID==roi)
+     graph<-Rphenograph(myroi[,markers],k=45)
+     myroi[,"casePheno"]<-membership(graph[[2]])
+     dn4$casePheno[match(myroi$uniqueLabel,dn4$uniqueLabel)]<-myroi$casePheno
+     }
+  ## grab all the meta clusters.
+  ErikMeta=dn4[,
+	c(markers,
+	"ROIID",
+	"casePheno")] %>% group_by(ROIID,casePheno) %>% 
+       dplyr::summarise_all(funs(median)) %>%data.frame
+     
+          ##Levine used k=15 for meta.
+     erikPheno<- Rphenograph(ErikMeta[,c(markers)], k = 15)
+     phenograph_cluster_meta<- factor(membership(erikPheno[[2]]))
+     table(phenograph_cluster_meta)
+     ErikMeta=cbind(ErikMeta,phenograph_cluster_meta)
+     ### plot PCA, label each case.  COO,  status.  ## 
+
+   myLocal=left_join(dn4, ErikMeta[,c("ROIID",
+	"casePheno","phenograph_cluster_meta")], by = c("ROIID", "casePheno"))
+
+  dn4[,"phenograph_cluster_meta"]<-NA
+  dn4[match(myLocal$uniqueLabel,dn4$uniqueLabel),"phenograph_cluster_meta"]<-myLocal[,"phenograph_cluster_meta"]
+
+  plot_clustering_heatmap_wrapper(expr=dn4[,c(markers)], 
+  cell_clustering=dn4[,"phenograph_cluster_meta"],
+  useMedians=FALSE,
+  useQuantiles=TRUE,
+  color_clusters=NULL)
+ return(dn4)
+}
+
+ plotMeta<-function(dn4=NULL){
+
+ markers<-c("CD20","CD30","CD206","CD3","CD45RA","CD45RO","CD4","CD68","CD8a","EphrinB2","FOXP3")
+   set.seed(3242020)
+   ErikMeta=dn4[,
+	c(markers,
+	"ROIID",
+	"casePheno")] %>% group_by(ROIID,casePheno) %>% 
+       dplyr::summarise_all(funs(median)) %>%data.frame
+     
+           ##Levine used k=15 for meta.
+     erikPheno<- Rphenograph(ErikMeta[,c(markers)], k = 45)
+     phenograph_cluster_meta<- factor(membership(erikPheno[[2]]))
+     table(phenograph_cluster_meta)
+     ErikMeta=cbind(ErikMeta,phenograph_cluster_meta)
+
+   myLocal=left_join(dn4, ErikMeta[,c("ROIID",
+	"casePheno","phenograph_cluster_meta")], by = c("ROIID", "casePheno"))
+
+  dn4[,"phenograph_cluster_meta"]<-NA
+  dn4[match(myLocal$uniqueLabel,dn4$uniqueLabel),"phenograph_cluster_meta"]<-myLocal[,"phenograph_cluster_meta"]
+
+   plot_clustering_heatmap_wrapper(expr=ErikMeta[,c(markers)], 
+  cell_clustering=ErikMeta[,"phenograph_cluster_meta"],
+  useMedians=FALSE,
+  useQuantiles=TRUE,
+  color_clusters=NULL)
+ return(dn4)
+  }
+
+getExperimentColors<-function(){
+  cd4s<-colorRampPalette(c("khaki1","plum2"),10)
+  cd4s<-cd4s(2)
+ names(cd4s)<-c("DLBCL","HD")
+  return(cd4s)
+}
+
+
+integratedPrimaryCommunityBarPlot<-function(cleandat=NULL){
+   tums<-cleandat[cleandat$annotation%in%c("CD4","CD8","TREG","Macrophage"),]
+   tums$response<-factor(as.character(tums$response))
+  ## filter prevalance
+  x<-as.data.frame.matrix(table(tums$experiment,tums$annotation))
+  x<-x/rowSums(x)
+  toFilter<-which(apply(apply(x,2,function(x) x==0),2,function(y) any(y==TRUE)))
+  tums<-tums[!tums$annotation%in%names(toFilter),]
+
+ ## need to plot all the tumor proportions CR vs. REF
+  #response vars=c("darkslateblue","firebrick2"))
+ 
+ computeImmuneProportions<-function(full.dn4=NULL,primary=NULL,clinicalFactor=NULL){
+  tumor.abund<-as.data.frame.matrix(table(tums$ROIID,tums$annotation))
+  ## immune proportions
+  tumor.abund<-100*(tumor.abund/(rowSums(tumor.abund)))
+
+  tumor.abund$response<-full.dn4[,clinicalFactor][match(rownames(tumor.abund),full.dn4$ROIID)]
+  tumor.means<-tumor.abund%>%group_by(response)%>%summarise_all(funs(mean))%>%data.frame
+  rownames(tumor.means)<-tumor.means[,1]
+  tumor.means<-tumor.means[,-1]
+  tumor.means<-t(tumor.means)
+  tumor.means<-data.frame(means=c(tumor.means[,1],tumor.means[,2]),response=c(rep(colnames(tumor.means)[1],nrow(tumor.means)),rep(colnames(tumor.means)[2],nrow(tumor.means))),names=rep(rownames(tumor.means,2)))
+  tumor.sd<-tumor.abund%>%group_by(response)%>%summarise_all(funs(sd))%>%data.frame
+  tumor.se<-tumor.sd[,-1]/sqrt(table(tumor.abund$response))
+   tumor.se<-t(tumor.se)
+   tumor.means$se<-c(tumor.se[,1],tumor.se[,2])
+  ## need to plot all the tumor proportions CR vs. REF
+  return(tumor.means)
+ }
+
+
+
+ ## add the immune populations.
+  ## MAC, TREG, CD4, CD8.
+   cd4.prop<-computeImmuneProportions(full.dn4=tums,primary="CD4",clinicalFactor="experiment")
+   cd4s<-getExperimentColors()
+    cd4.exp<-ggplot(cd4.prop,aes(x=names,y=means,fill=response))+geom_bar(stat='identity',position=position_dodge())+geom_errorbar(aes(ymin=abs(means-2*se), ymax=means+2*se), width=.2,
+                 position=position_dodge(.9))+theme_bw(base_size=14)+ theme(axis.text.x = element_text(angle = 45, hjust = 1))+ylab("TME proportion (%)")+xlab("TME communities")+scale_fill_manual(values=cd4s)
+  cd4.exp
+ ### immune proportions
+  savePlot(file="TME.primary.immune.proportions.png")
+
+ ## make a sheet of t-test results.
+ computeImmuneProportionsTTest<-function(full.dn4=NULL,primary=NULL,clinicalFactor=NULL){
+  tumor.abund<-as.data.frame.matrix(table(tums$ROIID,tums$annotation))
+  ## immune proportions
+  tumor.abund<-100*(tumor.abund/(rowSums(tumor.abund)))
+  tumor.abund$response<-full.dn4[,clinicalFactor][match(rownames(tumor.abund),full.dn4$ROIID)]
+  tres<-t.test(tumor.abund[which(tumor.abund$response=="DLBCL"),primary],
+ 	tumor.abund[which(tumor.abund$response=="HD"),primary])
+	   ## need to plot all the tumor proportions CR vs. REF
+  return(tres)
+ }
+    cd4.t<-computeImmuneProportionsTTest(full.dn4=tums,primary="CD4",clinicalFactor="experiment")
+ 	require(broom)
+	cd.4<-tidy(cd4.t)%>%data.frame
+	cd.4$bonf.p<-cd.4$p.value*4
+      cd8.t<-computeImmuneProportionsTTest(full.dn4=tums,primary="CD8",clinicalFactor="experiment")
+	cd.8<-tidy(cd8.t)%>%data.frame
+	cd.8$bonf.p<-cd.8$p.value*4  
+  mac.t<-computeImmuneProportionsTTest(full.dn4=tums,primary="Macrophage",clinicalFactor="experiment")
+	mac<-tidy(mac.t)%>%data.frame
+	mac$bonf.p<-mac$p.value*4    
+
+treg.t<-computeImmuneProportionsTTest(full.dn4=tums,primary="TREG",clinicalFactor="experiment")
+  treg<-tidy(treg.t)%>%data.frame
+	treg$bonf.p<-treg$p.value*4
+
+  library("xlsx")
+   write.xlsx(cd.4, file = "proportion.ttest.DLBCL.vs.HD.primaryPhenotypes.xlsx",
+      sheetName = "CD4", append = FALSE)
+   write.xlsx(cd.8, file = "proportion.ttest.DLBCL.vs.HD.primaryPhenotypes.xlsx",
+      sheetName = "CD8", append = TRUE)
+ write.xlsx(mac, file = "proportion.ttest.DLBCL.vs.HD.primaryPhenotypes.xlsx",
+      sheetName = "Macrophage", append = TRUE) 
+ write.xlsx(treg, file = "proportion.ttest.DLBCL.vs.HD.primaryPhenotypes.xlsx",
+      sheetName = "TREG", append = TRUE)
+
+
+
+    return(cd4.exp)
+ }
+
+```
+
+### Hodgkin Lymphoma phenotype
+```{r,eval=FALSE}
+
+
+  library(data.table)
+  library(dplyr)
+  library(magrittr)
+  library(dtplyr)  
+  library(ggplot2)
+  library(parallel)
+  library(neighbouRhood)
+  library(gplots)
+  library(RColorBrewer)
+  library(magrittr);library(dplyr)
+
+ ## we used Image J to correct tissue folds/tears by masking out those regions on the ROI.
+   load("~/Documents/imageAnalysis/steidl/steidl-spatialAnalysis9-11/fold-revised-10-5/dn4.final.foldRevised.RData")
+
+
+  ##ZZ-transform.
+  hd.z<- zScorePatientExpression(full.dn4=dn4,markers=1:36,ROIID.column=37)
+    hd.z2<- zScorePatientExpression(full.dn4=dn4,markers=41:42,ROIID.column=37)
+  hd.z$Area.norm<-hd.z2$Area
+  hd.z$Eccentricity.norm<-hd.z2$Eccentricity
+ ## 
+  hd.z$ROIID<-as.character(hd.z$ROIID)
+  hd.z$ROIID[which(hd.z$ROIID=="Case22_ROI01_40_a0")]<-"Case22_ROI_01_40_a0"
+  hd.z$ROIID<-factor(hd.z$ROIID,levels=unique(hd.z$ROIID)[order(nchar( sapply(strsplit(unique(hd.z$ROIID),"_"),function(x) x[1])))])
+
+ ## color key for ROIs.
+  color_clusters <- c("#DC050C", "#FB8072", "#1965B0", "#7BAFDE", "#882E72", 
+  "#B17BA6", "#FF7F00", "#FDB462", "#E7298A", "#E78AC3", 
+  "#33A02C", "#B2DF8A", "#55A1B1", "#8DD3C7", "#A6761D", 
+  "#E6AB02", "#7570B3", "#BEAED4", "#666666", "#999999", 
+  "#aa8282", "#d4b7b7", "#8600bf", "#ba5ce3", "#808000", 
+  "#aeae5c", "#1e90ff", "#00bfff", "#56ff0d", "#ffff00")
+   
+
+ # load("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure3-HD.vs.DLBCL/hd.z.foldRevised.allCases.Z.RData")
+
+ ## load the DLBCL data.
+  load("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure6-CD8-5NN-spatialModel-RICO/tumor.cd8.dlbcl/full.dn4.5nn2.CD8.MC.RData")
+
+  library(ComplexHeatmap)
+ ## show the standardization.
+  d<-data.frame(ROI=levels(hd.z$ROIID),col=c(color_clusters,color_clusters[1:14]) )
+  
+  roiCol<-d[,2] 
+  names(roiCol)<-d[,1]
+  ### add ROI annotation. 
+ rois<-HeatmapAnnotation(ROI=levels(hd.z$ROIID),
+	which="row",
+	col=list(ROI=roiCol),
+	annotation_legend_param=list(ncol=2))
+
+
+   x41bb<-makeJoyPlot(hd.z,marker="X41BB")
+   ccr4<-makeJoyPlot(hd.z,marker="CCR4")
+    cd11b<-makeJoyPlot(hd.z,marker="CD11b")
+   cd11c<-makeJoyPlot(hd.z,marker="CD11c")
+    cd14<-makeJoyPlot(hd.z,marker="CD14")
+   cd16<-makeJoyPlot(hd.z,marker="CD16")
+   CD206<-makeJoyPlot(hd.z,marker="CD206")
+   CD20<-makeJoyPlot(hd.z,marker="CD20")
+   cd30<-makeJoyPlot(hd.z,marker="CD30")
+   cd34<-makeJoyPlot(hd.z,marker="CD34")
+    cd3<-makeJoyPlot(hd.z,marker="CD3")
+    cd45ra<-makeJoyPlot(hd.z,marker="CD45RA")
+    cd45ro<-makeJoyPlot(hd.z,marker="CD45RO")
+    cd4<-makeJoyPlot(hd.z,marker="CD4")
+    cd68<-makeJoyPlot(hd.z,marker="CD68")
+    cd8<-makeJoyPlot(hd.z,marker="CD8a")
+    cxcr3<-makeJoyPlot(hd.z,marker="CXCR3")
+    cxcr5<-makeJoyPlot(hd.z,marker="CXCR5")
+    caspase<-makeJoyPlot(hd.z,marker="Caspase3")
+    dna1<-makeJoyPlot(hd.z,marker="DNA1")
+    dna2<-makeJoyPlot(hd.z,marker="DNA2")
+    ephrinb2<-makeJoyPlot(hd.z,marker="EphrinB2")
+     foxp3<-makeJoyPlot(hd.z,marker="FOXP3")
+     gata3<-makeJoyPlot(hd.z,marker="GATA3")
+     hlaabc<-makeJoyPlot(hd.z,marker="HLAABC")
+     hladr<-makeJoyPlot(hd.z,marker="HLADR")
+     icos<-makeJoyPlot(hd.z,marker="ICOS")
+     ido<-makeJoyPlot(hd.z,marker="IDO")
+    ki67<-makeJoyPlot(hd.z,marker="Ki67")
+   lag<-makeJoyPlot(hd.z,marker="LAG3")
+      nkg2d<-makeJoyPlot(hd.z,marker="NKG2D")
+   pd1<-makeJoyPlot(hd.z,marker="PD1")
+   pdl1<-makeJoyPlot(hd.z,marker="PDL1")
+    tim3<-makeJoyPlot(hd.z,marker="TIM3")
+    tbet<-makeJoyPlot(hd.z,marker="Tbet")
+ 
+  ## mean 0 and SD 1
+   hd.z[,c(1:37)]%>%group_by(ROIID)%>%summarise_all(funs(mean))%>%data.frame
+   hd.z[,c(1:37)]%>%group_by(ROIID)%>%summarise_all(funs(sd))%>%data.frame
+   
+  ######
+  draw(x41bb+ccr4+cd11b+cd11c+cd14+cd16+CD206+CD20+cd30+cd34+cd3+cd45ra+rois)
+  #savePlot(file="HD.zscores.expression_1.png")
+ ###
+  draw(cd45ro+cd4+cd68+cd8+cxcr3+cxcr5+caspase+dna1+dna2+ephrinb2+foxp3+gata3+rois)
+ # savePlot(file="HD.zscores.expression2.png")
+  ###
+  draw(hlaabc+hladr+icos+ido+ki67+lag+nkg2d+pd1+pdl1+tim3+tbet+rois)
+  # savePlot(file="HD.zscores.expression3.png")
+
+
+ ### boxplots.
+  library(ggplot2)
+    hd.z[,c("CD20","CD206","CD3","CD30","CD34","CD4","CD8a","CD45RA","CD45RO","CD68","FOXP3","ROIID","subType.correction2")]%>%group_by(ROIID,subType.correction2)%>%summarise_all(funs(mean))%>%data.frame%>%reshape2::melt()%>%ggplot(aes(x=subType.correction2,y=value))+geom_boxplot()+facet_wrap(~variable)+theme_bw(base_size=14)+theme(axis.text.x = element_text(angle = 90, hjust = 1))+ylab("Measurement mean")
+   # ggsave("Zscore.measurement.gatedPopulations.allHD.png")
+
+
+ 
+
+ hd.lineage<-c( "CD11b",
+                       "CD11c",
+                       "CD14",
+                       "CD15",
+                       "CD16",
+                       "CD206",
+			"CD20",
+			"CD30",
+			"CD34",
+			"CD3",
+			"CD45RA",
+			"CD45RO",
+			"CD4",
+			"CD68",
+			"CD8a",
+                       "FOXP3",
+			"EphrinB2",
+			"Eccentricity.norm",
+			"Area.norm",
+			"DNA1",
+			"DNA2") 
+ hd.induc<-c("X41BB",
+		"CCR4",
+		"CXCR3",
+		"CXCR5",
+		"Caspase3",
+		"GATA3",
+		"HLAABC",
+		"HLADR",
+		"ICOS",
+		"IDO",
+		"Ki67",
+		"LAG3",
+		"NKG2D",
+		"PD1",
+		"PDL1",
+		"TIM3",
+		"Tbet")
+  
+ 
+   hd.z<-metaClusterExperiment(dn4=hd.z,
+	markers=hd.lineage,
+	induc=hd.induc,
+	plotPCA=FALSE)  
+
+ ### meta-clustered data.
+ load("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure3-HD.vs.DLBCL/hd.z.foldRevised.allCases.Z.RData")
+    
+  plot_clustering_heatmap_wrapper(expr=hd.z[,c(hd.lineage[1:17])], 
+  cell_clustering=hd.z[,"phenograph_cluster_meta"],
+  useMedians=FALSE,
+  useQuantiles=TRUE,
+  color_clusters=NULL)
+
+
+ 
+ anno<-data.frame("1"="DC",
+		"2"="Macrophage",
+		"3"="CD8",
+		"4"="Granulocytic MDSC",
+		"5"="CD4",
+		"6"="Macrophage",
+		"7"="CD4",
+		"8"="BCell",
+		"9"="CD4",
+		"10"="Endothelial",
+		"11"="CD4",
+		"12"="HRS",
+		"13"="TREG",
+		"14"="CD4",
+		"15"="HRS",
+		"16"="CD4",
+		"17"="Macrophage")
+  anno<-as.data.frame(t(anno))
+ anno$cluster<-gsub("X","",rownames(anno))
+ hd.z$annotation<-anno[match(hd.z$phenograph_cluster_meta,anno$cluster),"V1"]
+ 
+
+  ## Cluster 7 was an ambiguous cluster. 
+  ## so we filter out the lowly expressed cells from the analysis.
+  ### this will increase the phenotype accuracy, but add errors in the spatial analysis.
+  ## the alternative is to keep phenotype ambiguity, with accurate spatial results.
+  ## either way, there is a trade off.
+   id<-which(hd.z[which(hd.z$phenograph_cluster_meta==7),"CD4"]<=(-0.7) |hd.z[which(hd.z$phenograph_cluster_meta==7),"CD3"]<=(-0.7)    )
+  ## represents about 8% error in cohort.
+
+  hd.z2<-hd.z
+  hd.z2<-hd.z2[-id,]
+   ErikMeta=hd.z2[,
+	c(hd.lineage,
+	"ROIID",
+	"annotation")] %>% group_by(ROIID,annotation) %>% 
+       dplyr::summarise_all(funs(median)) %>%data.frame
+
+   plot_clustering_heatmap_wrapper(expr=hd.z[,c(hd.lineage[1:17])], 
+  cell_clustering=hd.z[,"annotation"],
+  useMedians=FALSE,
+  useQuantiles=TRUE,
+  color_clusters=NULL)
+ 
+ # savePlot(file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/figure4-final/steidl.allCases.metaCluster.noFiltering.png")
+
+
+
+
+```
+
+
+### DLBCL pre-integration processing
+
+```{r,eval=FALSE}
+
+   load("~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.filtered.RData")
+ 
+  ## DLBCL Z-score.
+     zz<- zScorePatientExpression(full.dn4=full.dn4,markers=c(1:31,104:111),ROIID.column=32)
+
+   myMarkerList<-setUpMarkers()
+
+  expr<-full.dn4[,c(myMarkerList[["lineage_markers"]],myMarkerList[["induc"]],"response","treatment.status","uniqueLabel","ROIID")]
+  expr<-expr[which(expr$treatment.status!="ND"),]
+  expr.ref<-expr[which(expr$response=="Primary refract"),]
+  expr.cr<-expr[which(expr$response=="CR"),]
+  labels<-expr[,"uniqueLabel"]
+
+   ##new way of sampling.
+  tsne_inds<-sapply(unique(expr.cr$ROIID),function(x) randomSampleUniqueLabel(which.ROIID=x,N=1250,full.dn4=expr.cr))
+   tsne_inds<-as.vector(tsne_inds)
+  ## refractory samples
+  tsne_inds_ref<-sapply(unique(expr.ref$ROIID),function(x) randomSampleUniqueLabel(which.ROIID=x,N=4532,full.dn4=expr.ref))
+  tsne_inds_ref<-as.vector(tsne_inds_ref)
+  randomSamps<-c(tsne_inds,tsne_inds_ref)
+
+
+
+  ## single cell integration. 
+dlbcl.sub<-zz[match(randomSamps,zz$uniqueLabel),c("Cell_CCR4",
+	"Cell_CD206","Cell_CD20","Cell_CD30","Cell_CD3",
+	"Cell_CD45RA","Cell_CD45RO","Cell_CD4","Cell_CD68","Cell_CD8",
+	"Cell_CXCR3","Cell_DNA","Cell_DNA2","Cell_EphrinB2","Cell_FOXP3","Cell_HLADR",
+	"Cell_ICOS","Cell_Ki67","Cell_Lag3","Cell_PD1","Cell_PDL1","Cell_Tim3",
+	"Cell_Tbet","ROIID","uniqueLabel")]
+  colnames(dlbcl.sub)<-gsub("Cell_","",colnames(dlbcl.sub))
+  colnames(dlbcl.sub)[which(colnames(dlbcl.sub)=="Lag3")]<-"LAG3"
+  colnames(dlbcl.sub)[which(colnames(dlbcl.sub)=="Tim3")]<-"TIM3"
+   colnames(dlbcl.sub)[which(colnames(dlbcl.sub)=="DNA")]<-"DNA1"
+   colnames(dlbcl.sub)[which(colnames(dlbcl.sub)=="CD8")]<-"CD8a"
+   dlbcl.sub$experiment<-zz$response[match(dlbcl.sub$uniqueLabel,zz$uniqueLabel)]
+  ## merging.
+  ## Z-transforms both complete experiments
+   integ<-integrateHD.DLBCL(hd=NULL,dlbcl=NULL)
+   integ<-integ[which(!is.nan(integ$DNA1)),]
+   integ<-integ[which(!is.nan(integ$DNA2)),]
+   integ<-left_join(integ,full.dn4[,c("treatment.status","response","uniqueLabel")],by="uniqueLabel")
+   integ$batch<-"HD"
+   integ$batch[which(integ$response=="CR" | integ$response=="Primary refract")]<-"DLBCL"
+   
+
+  ## plot the distributions.
+   plotIntegrationPlots(integ=integ)
+
+
+  ### perform the tsne
+   ## sample balanced in each experiment
+  ## sample balanced 
+   ## both experiments together.
+  ## after pooling them together.
+   hd.rln<-integ[which(integ$experiment!="DLBCL"),]
+  ## sample 4,200 cells per ROIID per experiment.
+  # then sample 140,000 cells balanced across DLBCL response.
+   hd_ids<-sapply(unique(hd.rln$ROIID),function(x) randomSampleUniqueLabel(which.ROIID=x,N=3500,full.dn4=hd.rln))
+   hd_ids<-as.vector(hd_ids)
+ 
+
+     
+  
+   hd.rln2<-hd.rln[match(hd_ids,hd.rln$uniqueLabel),c("CCR4",
+	"CD206","CD20","CD30","CD3","CD45RA","CD45RO","CD4","CD68",
+	"CD8a","CXCR3","DNA1","DNA2","EphrinB2","FOXP3","HLADR",
+	"ICOS","Ki67","LAG3","PD1","PDL1","TIM3","Tbet","ROIID","uniqueLabel")]
+	hd.rln2$experiment<-dn4$diagnosis[match(hd.rln2$uniqueLabel,dn4$uniqueLabel)]
+
+ all(colnames(dlbcl.sub)==colnames(hd.rln2))
+     
+     integ.sub<-rbind(dlbcl.sub,hd.rln2)
+      integ.sub$batch<-"HD"
+      integ.sub$batch[which(integ$response=="CR" | integ$response=="Primary refract")]<-"DLBCL"
+   
+  ## use Seurat to plot single cell tSNE.
+  library(Seurat)
+  pbmc<- seuratDownSampleIntegrationEvaluation(downSample=TRUE)
+  ##this shows 
+  p1 <- DimPlot(pbmc, reduction = "pca", group.by = "tech")
+
+
+```
+
+
+### Batch correct using limma
+
+```{r, eval=FALSE}
+
+ require(limma)
+  dim(integ)
+ annos<-data.frame(annotation=hd.z$annotation,label=hd.z$uniqueLabel)
+ annos2<-data.frame(annotation=full.dn4$subType.correction,label=full.dn4$uniqueLabel)
+ annos<-rbind(annos,annos2)
+  annos2<-NULL
+ annos<-annos[match(integ$uniqueLabel,annos$label),]
+
+  integ$annotation='none'
+  integ$annotation[match(annos$label,integ$uniqueLabel)]<-as.character(annos$annotation)
+ 
+ 
+ ## meta-cluster the experiment.
+ ### meta-cluster both experiments.
+ ##slow.
+  set.seed(1234)
+ ## this performs case independent phenograph
+  ### includes meta-cluster with k=15
+  integ2<-metaClusterExperiment(dn4=integ,
+	markers=c("CD20","CD30","CD206","CD3","CD45RA","CD45RO","CD4","CD68","CD8a","EphrinB2","FOXP3"),
+	plotPCA=FALSE)
+
+ # load("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure3-HD.vs.DLBCL/integ2.metacluster.HD.DLBCL.RLN.RData")
+
+  ## omit ambiguous cluster from HL
+ ## Cluster 7 was an ambiguous cluster. 
+  ## so we filter out the lowly expressed cells from the analysis.
+  ### this will increase the phenotype accuracy, but add errors in the spatial analysis.
+  ## the alternative is to keep phenotype ambiguity, with accurate spatial results.
+  ## either way, there is a trade off. 
+  hd.omit.id<-hd.z$uniqueLabel[which(hd.z[which(hd.z$phenograph_cluster_meta==7),"CD4"]<=(-0.7) |hd.z[which(hd.z$phenograph_cluster_meta==7),"CD3"]<=(-0.7))]
+  
+
+   integ2<-integ2[!integ2$uniqueLabel%in%hd.omit.id,]
+
+   plot_clustering_heatmap_wrapper(expr=integ2[,c("CD20","CD30","CD206","CD3","CD45RA","CD45RO","CD4","CD68","CD8a","EphrinB2","FOXP3")], 
+  cell_clustering=integ2[,"phenograph_cluster_meta"],
+  useMedians=FALSE,
+  useQuantiles=TRUE,
+  color_clusters=NULL)
+
+ 
+  integ2$MC<-paste0("C",integ2$phenograph_cluster_meta)
+   integ3<-metaClusterPhenotype(dn4=integ2,
+	phenotype="C4",
+	myPheno="MC",
+	markers=colnames(integ2)[1:22],plotPCA=FALSE,k2=25)
+
+ save(integ2,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/figure4-final/integ2.clustered.reproduced.RData")
+
+ ## filter low CD4
+  omitCD4.dim<-which(integ3$C4_subphenograph_cluster_meta=="1" | integ3$C4_subphenograph_cluster_meta=="4")
+ integ2<-integ2[-omitCD4.dim,]
+
+   anno<-c("TREG",
+	"CD8",
+	"Macrophage",
+	"CD4",
+	"BCell",
+	"Macrophage",
+	"TREG",
+	"CD4",
+	"Macrophage",
+	"empty",
+	"CD8",
+	"BCell",
+	"BCell",
+	"BCell",
+	"HRS",
+	"BCell")
+   anno<-data.frame(anno)
+   anno$cluster.id<-seq(1,16)
+  integ2$annotation<-anno[match(integ2$phenograph_cluster_meta,anno$cluster.id),"anno"]
+ 
+
+
+ ### ANOVA comparing cluster differences.
+   immune<-integ2[integ2$annotation%in%c("CD4","CD8","TREG","Macrophage"),]
+   rln.id<-c("Case1_ROI_01_5_a0",
+	      "Case1_ROI_02_6_a0",
+	"Case2_ROI_01_7_a0",
+	     "Case3_ROI_01_8_a0",
+	"Case4_ROI_02_9_a0",
+	    "Case5_ROI_01_10_a0")
+
+
+  
+  ### ONLY IMMUNE
+   require(limma)
+  # immune<-cleandat[which(cleandat$annotation!="BCell" & cleandat$annotation!="HRS"),]
+   #immune$Area<-0
+   #immune$Area<-cleandat$Area[match(immune$uniqueLabel,cleandat$uniqueLabel)]
+   X<-asinh(immune[,c(1:22,24)])
+   X<-t(X)
+  rv<-removeBatchEffect(X,batch=as.character(immune$experiment),batch2=immune$ROIID)
+  rv<-as.data.frame(t(rv))
+  rv$ROIID<-immune$ROIID
+  rv$experiment<-immune$experiment
+   rv$annotation<-immune$annotation
+  all(rownames(rv)==rownames(immune))
+  immune[rownames(rv),colnames(rv)]<-rv
+  immune$annotation<-as.character(immune$annotation)
+
+ ## selected demonstration. constant expression across ROI and experiment.
+  immune%>%group_by(ROIID,experiment)%>%summarise(PDL1=mean(PDL1),CD4=mean(CD4),CD68=mean(CD68),Area=mean(Area),DNA=mean(DNA1))%>%data.frame
+  
+  ### filtering out extreme phenotypes.
+   mac.id<-which(immune$CD68  > quantile(immune$CD68,0.965) & immune$annotation=="Macrophage")
+    dna.id<-which(immune$DNA1  > quantile(immune$DNA1,0.975) & immune$annotation=="TREG")
+      area.id<-which(immune$Area  > quantile(immune$Area,0.975) & immune$annotation=="TREG")
+
+  immune[c(-mac.id,-dna.id,-area.id),]%>%group_by(ROIID,experiment,annotation)%>%summarise(CD4=median(CD4),CD68=median(CD68),FOXP3=median(FOXP3),CD8=median(CD8a),Area=median(Area),DNA=median(DNA1))%>%reshape2::melt()%>%ggplot(aes(x=annotation,y=value,fill=experiment))+geom_boxplot()+facet_wrap(~variable)+scale_fill_manual(values=getExperimentColors())+theme_bw(base_size=14)+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ 
+
+ # ggsave("Lineage.marker.intensity.TME.normalized.png")
+
+  
+  plot_clustering_heatmap_wrapper(expr=immune[,c("CD20","CD30","CD206","CD3","CD45RA","CD45RO","CD4","CD68","CD8a","EphrinB2","FOXP3","DNA1","DNA2","Area")], 
+  cell_clustering=immune[,"annotation"],
+  useMedians=TRUE,
+  useQuantiles=TRUE,
+  color_clusters=NULL)
+
+ ### use ComBat to batch correct
+  library(sva)
+   mod<-model.matrix(~annotation,integ2)
+   batch<-integ2$experiment
+   test<-integ2[,1:24]
+	rownames(test)<-integ2$uniqueLabel
+  test<-t(test)
+   cleandat <- ComBat(test,batch,mod)
+    cleandat<-t(cleandat)
+   cleandat<-as.data.frame(cleandat)
+    cleandat$experiment<-integ2$experiment
+     cleandat$ROIID<-integ2$ROIID
+      cleandat$annotation<-integ2$annotation
+         cleandat$uniqueLabel<-integ2$uniqueLabel
+     test<-cleandat%>%group_by(ROIID,annotation)%>%summarise_all(funs(mean))%>%data.frame
+	test$experiment<-integ2$experiment[match(test$ROIID,integ2$ROIID)]
+	test%>%reshape2::melt()%>%ggplot(aes(x=annotation,y=asinh(value),fill=experiment))+geom_boxplot()+facet_wrap(~variable)+theme_bw(base_size=14)+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+  ## append clinical data.
+  cleandat$response<-integ2$response[match(cleandat$uniqueLabel,integ2$uniqueLabel)]
+  cleandat$clinical.type<-"NA"
+  cleandat$clinical.type<-as.character(dn4$diagnosis[match(cleandat$uniqueLabel,dn4$uniqueLabel)])
+    cleandat$clinical.type[which(is.na(cleandat$clinical.type))]<-as.character(full.dn4$COO[match(cleandat$uniqueLabel[which(is.na(cleandat$clinical.type))],full.dn4$uniqueLabel)])
+ cleandat$clinical.type[which(cleandat$clinical.type=="RLN1" |cleandat$clinical.type=="RLN2" |  cleandat$clinical.type=="RLN3" | cleandat$clinical.type=="RLN4" | cleandat$clinical.type=="RLN5" )] <-"RLN" 
+
+
+
+
+```
+
+
+
+### Test for batch effect evaluation
+
+```{r,eval=FALSE}
+   require(limma)
+   immune<-cleandat[which(cleandat$annotation!="BCell" & cleandat$annotation!="HRS"),]
+   immune<-immune[!immune$ROIID%in%c("Placenta_1_3_a0","Placenta_2_4_a0","Tonsil_1_1_a0","Tonsil_2_2_a0"),]
+
+
+   X<-asinh(immune[,c(1:22,24)])
+   X<-t(X)
+  rv<-removeBatchEffect(X,batch=as.character(immune$experiment),batch2=immune$ROIID)
+  rv<-as.data.frame(t(rv))
+  rv$ROIID<-immune$ROIID
+  rv$experiment<-immune$experiment
+   rv$annotation<-immune$annotation
+  all(rownames(rv)==rownames(immune))
+  immune[rownames(rv),colnames(rv)]<-rv
+  immune$annotation<-as.character(immune$annotation)
+  
+
+
+ 
+#### TEST FOR BATCH EFFECTS KBET
+ ## perform kBET to check integration quality.
+  library(kBET)
+  # subset_size <- 0.01 #subsample to 10% of the data
+    ##new way of sampling.
+  tsne_inds<-sapply(unique(immune$ROIID[which(immune$experiment=="HD")]),
+	function(x) randomSampleUniqueLabel(which.ROIID=x,N=400,full.dn4=immune[which(immune$experiment=="HD"),]))
+   tsne_inds<-as.vector(tsne_inds)
+  ## refractory samples
+  tsne_inds_ref<-sapply(unique(immune$ROIID[which(immune$experiment!="HD")]),
+	function(x) randomSampleUniqueLabel(which.ROIID=x,N=432,full.dn4=immune[which(immune$experiment!="HD"),]))
+  tsne_inds_ref<-as.vector(tsne_inds_ref)
+  randomSamps<-c(tsne_inds,tsne_inds_ref)
+
+  data<-immune[match(randomSamps,immune$uniqueLabel),]
+  
+  
+ 
+      batch<-ifelse(data$experiment=="HD",1,0)
+   pca.data <- prcomp(data[,c("CCR4","CD3","CD45RA","CD45RO","CD4",
+	"CD8a","CXCR3","PDL1","PD1","TIM3","CD68","FOXP3","LAG3")], center=TRUE) 
+  
+   #compute PCA representation of the data
+   batch.silhouette <- batch_sil(pca.data, batch)
+   batch.pca <- pcRegression(pca.data, batch)
+  
+   batch.data<-data.frame(maxSigPC=batch.pca$msigPC,
+			maxExplained.Var=batch.pca$maxVar,
+			maxCorr=batch.pca$maxCorr,
+			samplePercent=nrow(data)/nrow(immune),
+			batch.pca$r2)
+   #write.csv(batch.data,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure3-HD.vs.DLBCL/integration-QC/immune-stratified-limma-norm/kBET.results.0.05.downsample.csv")
+
+
+
+### TEST FOR BATCH EFFECTS USING ANOVA
+  data<-immune%>%group_by(ROIID,experiment,annotation)%>%summarise(
+	CCR4=mean(CCR4),
+	CD3=mean(CD3),
+	CD45RA=mean(CD45RA),
+	CD45RO=mean(CD45RO),
+	CD4=mean(CD4),	
+	CD8=mean(CD8a),
+	CXCR3=mean(CXCR3),
+	DNA1=mean(DNA1),
+	PDL1=mean(PDL1),
+	PD1=mean(PD1),
+	TIM3=mean(TIM3),
+	CD68=mean(CD68),
+	#LAG3=mean(LAG3),
+	#Ki67=mean(Ki67),
+	FOXP3=mean(FOXP3))%>%data.frame
+ 
+ # library(xlsx)
+ colnames(data)[which(colnames(data)=="annotation")]<-"phenotype"
+
+ ## all values are constant.
+  data2<-immune%>%group_by(ROIID,experiment)%>%summarise(
+	CCR4=mean(CCR4),
+	CD3=mean(CD3),
+	CD45RA=mean(CD45RA),
+	CD45RO=mean(CD45RO),
+	CD4=mean(CD4),	
+	CD8=mean(CD8a),
+	CXCR3=mean(CXCR3),
+	DNA1=mean(DNA1),
+	PDL1=mean(PDL1),
+	PD1=mean(PD1),
+	TIM3=mean(TIM3),
+	CD68=mean(CD68),
+	#LAG3=mean(LAG3),
+	#Ki67=mean(Ki67),
+	FOXP3=mean(FOXP3))%>%data.frame
+
+ for(i in colnames(data)[c(-1,-2,-3)]){
+  data[,i]<-data[,i]-data2[1,i] 
+  }
+
+
+  batch<-ifelse(data$experiment=="HD",1,2)
+  clusters<-unique(data$phenotype)
+  kBET_result_list <- list()
+  sum_kBET <- 0
+  for (cluster_level in unique(clusters)){
+   batch_tmp <- batch[clusters == cluster_level]
+   data_tmp <- data[clusters == cluster_level,c(-1,-2,-3)]
+   kBET_tmp <- kBET(df=data_tmp, batch=batch_tmp, plot=FALSE)
+   kBET_result_list[[cluster_level]] <- kBET_tmp
+   sum_kBET <- sum_kBET + kBET_tmp$summary$kBET.observed[1]
+}
+  #averaging
+  mean_kBET = sum_kBET/length(unique(clusters))
+  means<-sapply(kBET_result_list,function(x) x$average.pval)
+  sds<-sapply(kBET_result_list,function(x) sd(x$results[,2]))
+  error <- qt(0.975,df=75-1)*sds/sqrt(75)
+  left <- means-error
+  right <- means+error
+  kbetResults<-data.frame(rejection.rate=means,min=left,max=right)
+  kbetResults$phenotype<-rownames(kbetResults)
+
+  library("xlsx")
+   write.xlsx(kbetResults, file = "kbet.rejection.xlsx",
+      sheetName = "average.pval", append = FALSE)
+ 
+   ggplot(kbetResults,aes(x=phenotype,y=rejection.rate))+geom_point(size=5)+geom_errorbar(aes(ymin=min,ymax=max),width=0.2)+scale_y_continuous(limits=c(0,1))+geom_hline(yintercept=0.05,col='red',linetype='dashed')+geom_rect( aes(xmin=0,xmax=5,ymin=0,ymax=0.05),fill='grey',alpha=0.5)+theme_ipsum(base_family="Arial")+ylab("p-value")+ggtitle("Quantification of batch effect")
+ #   ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure3-HD.vs.DLBCL/integration-QC/immune-stratified-limma-norm/kBET.batchEffect.test.png")
+
+
+  means<-sapply(kBET_result_list,function(x) mean(x$summary$kBET.observed))
+  sds<-sapply(kBET_result_list,function(x) sd(x$summary$kBET.observed))
+  error <- qt(0.975,df=75-1)*sds/sqrt(4)
+  left <- means-error
+  right <- means+error
+  kbetResults<-data.frame(kBET=means,min=left,max=right)
+  kbetResults$phenotype<-rownames(kbetResults)
+
+ write.xlsx(kbetResults, file = "kbet.rejection.xlsx",
+      sheetName = "kBET.scores", append = TRUE)
+ 
+
+   ggplot(kbetResults,aes(x=phenotype,y=kBET))+geom_point(size=5)+geom_errorbar(aes(ymin=min,ymax=max),width=0.2)+scale_y_continuous(limits=c(0,1))+theme_ipsum(base_family="Arial")+ylab("kBET score")+ggtitle("Quantification of batch effect")
+
+    ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure3-HD.vs.DLBCL/integration-QC/immune-stratified-limma-norm/kBET.scores.test.png")
+
+ ## load the ANOVA workbook and write the KBET results there.
+ 
+
+
+
+
+
+
+  results<-data.frame(CD4=c(kBET_result_list[[1]]$result[,2],
+	CD8=kBET_result_list[[2]]$result[,2],
+	MAC=kBET_result_list[[3]]$result[,2],
+	TREG=kBET_result_list[[4]]$result[,2]))
+  write.csv(results,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure3-HD.vs.DLBCL/integration-QC/immune-stratified-limma-norm/kBET.results.test.csv")
+
+
+
+ ## explained variance.
+   data<-immune%>%group_by(experiment,annotation)%>%summarise(
+	CCR4=mean(CCR4),
+	CD3=mean(CD3),
+	CD45RA=mean(CD45RA),
+	CD45RO=mean(CD45RO),
+	CD4=mean(CD4),	
+	CD8=mean(CD8a),
+	CXCR3=mean(CXCR3),
+	DNA1=mean(DNA1),
+	PDL1=mean(PDL1),
+	PD1=mean(PD1),
+	TIM3=mean(TIM3),
+	CD68=mean(CD68),
+	#LAG3=mean(LAG3),
+	Ki67=mean(Ki67),
+	FOXP3=mean(FOXP3))%>%data.frame
+  library(xlsx)
+ colnames(data)[which(colnames(data)=="annotation")]<-"phenotype"
+
+  
+
+  anovas<-data.frame(p.values= c(anova(lm(CCR4~experiment+phenotype,data))[1:2,5],
+	anova(lm(CXCR3~experiment+phenotype,data))[1:2,5],
+	anova(lm(PDL1~experiment+phenotype,data))[1:2,5],
+	anova(lm(TIM3~experiment+phenotype,data))[1:2,5],
+	anova(lm(PD1~experiment+phenotype,data))[1:2,5]),
+	#anova(lm(Ki67~experiment+phenotype,data))[1:2,5]),
+	feature=rep(c("experiment","phenotype"),5),
+	phenotype=c(rep("CCR4",2),
+	rep("CXCR3",2),
+	rep("PDL1",2),
+	rep("TIM3",2),
+	rep("PD1",2)))
+	#rep("Ki67",2))
+  ggplot(anovas,aes(x=phenotype,y=p.values,color=feature))+geom_point(size=4)+geom_hline(yintercept=0.05,col='pink2',linetype='dashed')+theme_ipsum(base_family="Arial")+scale_color_manual(values=c("black","red"))+ylab("ANOVA p-value")+ggtitle("Expression variability explained by experiment/batch or phenotype")
+   ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure3-HD.vs.DLBCL/integration-QC/immune-stratified-limma-norm/ANOVA.average.expression.phenotype.experiment.png")
+
+
+
+
+
+```
+
+
+### Bar plot comparisons of the TME
+
+```{r,eval=FALSE}
+ ### barplot
+ ## barplot of primary phenotypes comparing HD vs DLBCL.
+  integratedPrimaryCommunityBarPlot(cleandat=immune)
+
+   ##plot clustering heatmap.
+   immune$subannotation2<-as.character(immune$subannotation)
+   immune$subannotation2<-sapply( strsplit(immune$subannotation2,"_"),function(x) paste0(x[1],"_",letters[as.numeric(x[2])]))
+   immune$subannotation2<-factor(immune$subannotation2,levels=rownames(table(immune$subannotation2,immune$subannotation)))
+
+  ErikMeta=immune[,
+	c(c("CD206","CD3","CD45RA","CD45RO","CD4","CD68","CD8a","FOXP3","CXCR3","CCR4","HLADR","Ki67","PD1","PDL1","TIM3"),
+	#"ROIID",
+	"subannotation2")] %>% group_by(subannotation2) %>% 
+       dplyr::summarise_all(funs(median)) %>%data.frame  
+    integratedColors<-getIntegratedColors(immune)
+   plot_clustering_heatmap_wrapper(expr=ErikMeta[,c("CD206","CD3","CD45RA","CD45RO","CD4","CD68","CD8a","FOXP3","CXCR3","CCR4","HLADR","Ki67","PD1","PDL1","TIM3")], 
+  cell_clustering=ErikMeta[,"subannotation2"],
+  useMedians=FALSE,
+  useQuantiles=TRUE,
+  color_clusters=integratedColors)
+    savePlot(file="TME.immune.HD.DLBCL.subannotation.png")
+
+
+
+ community<-immune%>%group_by(ROIID,subannotation2) %>%summarise(TIM3=mean(TIM3),	
+	CD4=mean(CD4),
+	CD68=mean(CD68),
+	CD8a=mean(CD8a),
+	FOXP3=mean(FOXP3),
+	#HLADR=mean(HLADR),
+	PD1=mean(PD1),
+	#ICOS=mean(ICOS),
+	PDL1=mean(PDL1),
+	#CCR4=mean(CCR4),
+	#CXCR3=mean(CXCR3),
+	CD206=mean(CD206),
+	Ki67=mean(Ki67))%>%data.frame
+
+    PC<-prcomp(community[,c(-1,-2)],scale=FALSE,center=FALSE)
+    PCi<-data.frame(PC$x,ROIID=community$ROIID,annotation=community$subannotation2)
+    PCi$experiment<-immune$experiment[match(PCi$ROIID,immune$ROIID)]
+ pca.perc<-100*round(PC$sd/sum(PC$sd),3)
+   
+ experiment.states.pca<- ggplot(PCi,aes(x=PC1,y=PC2,col=experiment,label=ROIID))+geom_point(color="black",size=3.75,alpha=0.95)+geom_point(aes(fill=experiment,col=experiment),alpha=1,size=3.8)+xlim(c( min(PCi$PC1)-0.5,  max(PCi$PC1)+0.05))+scale_color_manual(values=getExperimentColors())+theme_classic()+ xlab(paste0("PC1 (",pca.perc[1],"%)"))+ylab(paste0("PC2 (",pca.perc[2],"%)"))
+ print(experiment.states.pca)
+
+  integratedColors<-getIntegratedColors(immune)
+ #### PCA with the color coded sub-community.
+   experiment.states.pca2<- ggplot(PCi,aes(x=PC1,y=PC2,col=annotation))+geom_point(color="black",size=2.05)+geom_point(aes(fill=annotation,col=annotation),size=2)+xlim(c( min(PCi$PC1)-0.5,  max(PCi$PC1)+0.05))+
+	theme_classic()+ xlab(paste0("PC1 (",pca.perc[1],"%)"))+ylab(paste0("PC2 (",pca.perc[2],"%)"))+scale_color_manual(values=integratedColors)
+ print(experiment.states.pca2)
+
+ grid.arrange(experiment.states.pca,experiment.states.pca2,ncol=2)
+    savePlot(file="immune.states.integration.PCA.subcommunity.png")
+   require(ggrepel)
+ community.states.pca<- ggplot(PCi,aes(x=PC1,y=PC2,col=annotation,label=ROIID))+
+	geom_point(size=2)+xlim(c( min(PCi$PC1)-0.5,  max(PCi$PC1)+0.05))+
+	theme_classic()+xlab(paste0("PC1 (",pca.perc[1],"%)"))+ylab(paste0("PC2 (",pca.perc[2],"%)"))
+ print(community.states.pca)
+   pca.clust<-hclust(log(1+dist(PCi[,grepl("PC",colnames(PCi))])))
+    plot(pca.clust,main="PCA Distance",xlab="community")
+
+
+
+```
