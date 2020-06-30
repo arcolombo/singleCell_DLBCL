@@ -352,6 +352,42 @@ row.names(pmat) <- rname
  }
 
 
+
+compareRandomNetwork<-function(full.dn4=NULL,N=100,myFormula=formula("NGCB~Tumor_a")
+){
+   randomDomain<-list() 
+  for(j in 1:N){
+ message(j)
+  x<-full.dn4$tumor.5nn.class.unsup
+  x2<-data.frame(uniqueLabel=full.dn4$uniqueLabel,
+	tumor.5nn.random=sample(x,replace=F))
+  randomDomain[[length(randomDomain)+1]]<-x2
+  }
+   rands<-full.dn4
+   mlr<-list()
+   for(i in 1:length(randomDomain)){
+  message(i)
+    rands$tumor.5nn.class.unsup<-randomDomain[[i]][match(rands$uniqueLabel,randomDomain[[i]]$uniqueLabel),"tumor.5nn.random"]
+    tum<-as.data.frame.matrix(table(rands$case,rands$tumor.5nn.class.unsup))
+  tum<-tum/rowSums(tum)
+  tum<-as.data.frame(tum[,grepl("Tumor_",colnames(tum))])
+  tum$case<-rownames(tum)
+  imm<-tum
+  imm$IPI<-rands$IPI[match(imm$case,rands$case)]
+  imm$NGCB<-rands$COO[match(imm$case,rands$case)]
+  imm$NGCB<-ifelse(imm$NGCB=="NGCB",1,0)
+  imm<-imm[,which(colnames(imm)!="case")]
+
+
+  ## HANS OR
+  rand.mlr<- glm(myFormula,family='binomial',imm)%>%summary
+  mlr[[(length(mlr)+1)]]<-rand.mlr
+  }## loop
+
+ return(mlr)
+ }
+
+
 ```
 
 
@@ -835,6 +871,27 @@ ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure6-CD8-5NN-spatial
 
 ```
 
+### Compare multivariate logistic AIC to random
+```{r, eval=FALSE}
+## random network comparison.
+ ## we want to compare the HANS MLR to observed domain.
+  mlr<-compareRandomNetwork(full.dn4=full.dn4.5nn2,N=250,myFormula=formula("NGCB~Tumor_c+Tumor_d+Tumor_e+Tumor_g+Tumor_h+Tumor_i+IPI"))
+
+  AIC<-c(sapply(mlr,function(x) x$aic))
+ ###using the best model.
+  p<-1-length(which(AIC>hans.mlr2$aic))/(1+length(AIC))
+   data.frame(AIC=AIC)%>%ggplot(aes(x=AIC))+geom_density(fill='lightblue')+theme_ipsum(base_family="Arial")+geom_vline(xintercept=hans.mlr2$aic,col='red',linetype='dashed')+xlab("AIC random network (N=250)")+ylab("Density of randomized network")+ggplot2::annotate('text',x=46,y=0.041,label=paste0("p=",round(p,3)))
+ ##write to notebook.
+   ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure6-CD8-5NN-spatialModel-RICO/tumor.cd8.dlbcl/Tumor-analysis-5NN/AIC.random.vs.best.tumorTopography.png")
+
+   addWorksheet(fig5,"AIC.logistic")
+   writeData(fig5,"AIC.logistic",
+	data.frame(random=AIC,oberved=hans.mlr2$aic,tumor.subCluster=sub.mlr$aic),
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=1)
+  saveWorkbook(fig5,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure6-CD8-5NN-spatialModel-RICO/tumor.cd8.dlbcl/Tumor-analysis-5NN/Figure5Table.xlsx",overwrite=TRUE)
+
+
+```
 
 ### Spatial organization model.
 
