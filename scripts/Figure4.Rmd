@@ -806,9 +806,10 @@ tme.state<-grid.arrange(pdl1.tme,
 
   ##ZZ-transform.
   hd.z<- zScorePatientExpression(full.dn4=dn4,markers=1:36,ROIID.column=37)
-    hd.z2<- zScorePatientExpression(full.dn4=dn4,markers=41:42,ROIID.column=37)
+  hd.z2<- zScorePatientExpression(full.dn4=dn4,markers=41:42,ROIID.column=37)
   hd.z$Area.norm<-hd.z2$Area
   hd.z$Eccentricity.norm<-hd.z2$Eccentricity
+  hd.z2<-NULL
  ## 
   hd.z$ROIID<-as.character(hd.z$ROIID)
   hd.z$ROIID[which(hd.z$ROIID=="Case22_ROI01_40_a0")]<-"Case22_ROI_01_40_a0"
@@ -1001,6 +1002,98 @@ tme.state<-grid.arrange(pdl1.tme,
   color_clusters=NULL)
  
  # savePlot(file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/figure4-final/steidl.allCases.metaCluster.noFiltering.png")
+
+
+
+
+```
+
+### Manual gating of positive populations in cHL
+```{r,eval=FALSE}
+
+ hd.z$TIM3.cut<-cut2(hd.z$TIM3,g=3)
+  hd.z$PD1.cut<-cut2(hd.z$PD1,g=3)
+   hd.z$CCR4.cut<-cut2(hd.z$CCR4,g=3)
+   hd.z$PDL1.cut<-cut2(hd.z$PDL1,g=3)
+
+ hl.pdl1<-table(hd.z$annotation,hd.z$PDL1.cut)%>%as.data.frame.matrix
+ hl.pdl1<-100* hl.pdl1/rowSums(hl.pdl1)
+ hd.z$experiment<-'HL'
+ hd.z$PDL1.thresh<-"PDL1-"
+ hd.z$PDL1.thresh[which(hd.z$PDL1.cut=="[ 0.277, 6.219]")]<-"PDL1+"
+ hd.z$PDL1.thresh[which(hd.z$PDL1.cut=="[-0.485, 0.277)")]<-"PDL1.mid"
+### TIM3
+  hd.z$TIM3.thresh<-"TIM3-"
+  hd.z$TIM3.thresh[which(hd.z$TIM3.cut=="[ 0.214, 6.680]")]<-"TIM3+"
+  hd.z$TIM3.thresh[which(hd.z$TIM3.cut=="[-0.505, 0.214)")]<-"TIM3.mid"
+## PD1
+  hd.z$PD1.thresh<-"PD1-"
+  hd.z$PD1.thresh[which(hd.z$PD1.cut=="[ 0.180,11.437]")]<-"PD1+"
+  hd.z$PD1.thresh[which(hd.z$PD1.cut=="[-0.512, 0.180)")]<-"PD1.mid"
+
+
+
+
+ ### dlbcl
+ zz$TIM3.cut<-cut2(zz$Cell_Tim3,g=3)
+  zz$PD1.cut<-cut2(zz$Cell_PD1,g=3)
+   zz$CCR4.cut<-cut2(zz$Cell_CCR4,g=3)
+   zz$PDL1.cut<-cut2(zz$Cell_PDL1,g=3)
+   zz$experiment<-'DLBCL'
+
+  zz$PDL1.thresh<-"PDL1-"
+  zz$PDL1.thresh[which(zz$PDL1.cut=="[ 0.400, 9.438]")]<-"PDL1+"
+ ## annotating the thresholds.
+  zz$PDL1.thresh<-"PDL1-"
+  zz$PDL1.thresh[which(zz$PDL1.cut=="[ 0.400, 9.438]")]<-"PDL1+"
+  zz$PDL1.thresh[which(zz$PDL1.cut=="[-0.413, 0.400)")]<-"PDL1.mid"
+
+### TIM3
+  zz$TIM3.thresh<-"TIM3-"
+  zz$TIM3.thresh[which(zz$TIM3.cut=="[ 0.359, 5.253]")]<-"TIM3+"
+  zz$TIM3.thresh[which(zz$TIM3.cut=="[-0.482, 0.359)")]<-"TIM3.mid"
+## PD1
+  zz$PD1.thresh<-"PD1-"
+  zz$PD1.thresh[which(zz$PD1.cut=="[ 0.333,15.748]")]<-"PD1+"
+  zz$PD1.thresh[which(zz$PD1.cut=="[-0.484, 0.333)")]<-"PD1.mid"
+
+  library(hrbrthemes)
+
+
+ joint<-data.frame(ROIID=c(as.character(hd.z$ROIID),as.character(zz$ROIID)),
+	phenotype=c(as.character(hd.z$annotation),as.character(zz$subType.correction)),
+	experiment=c(hd.z$experiment,zz$experiment),
+	TIM3=c(as.character(hd.z$TIM3.thresh),as.character(zz$TIM3.thresh)),
+	PD1=c(as.character(hd.z$PD1.thresh),as.character(zz$PD1.thresh)),
+	#CCR4=c(as.character(hd.z$CCR4.thresh),as.character(zz$CCR4.thresh)),
+	PDL1=c(as.character(hd.z$PDL1.thresh),as.character(zz$PDL1.thresh)))
+
+
+  pdl1.pos<-joint%>%group_by(phenotype,experiment)%>%summarise(PDL1.pos=mean(PDL1=="PDL1+"),SD=sd(PDL1=="PDL1+"))%>%data.frame
+  pdl1.pos$SD[which(pdl1.pos$experiment=='DLBCL')]<- pdl1.pos$SD[which(pdl1.pos$experiment=='DLBCL')]/41
+  pdl1.pos$SD[which(pdl1.pos$experiment!='DLBCL')]<- pdl1.pos$SD[which(pdl1.pos$experiment!='DLBCL')]/44
+
+  pdl1.barGraph<-ggplot(pdl1.pos[pdl1.pos$phenotype%in%c("CD8","CD4","Endothelial","Macrophage","TREG"),],aes(x=phenotype,y=PDL1.pos,fill=experiment))+geom_bar(stat='identity',position='dodge')+geom_errorbar(aes(ymin=PDL1.pos-1.96*SD,ymax=PDL1.pos+1.96*SD),position=position_dodge())+theme_ipsum(base_family="Arial")+scale_fill_manual(values=c('khaki1','plum2'))+ylab("PDL1+ by tertile gate (%)")+ggtitle("PDL1+ (%) by tertile gating within experiment")
+
+
+ pd1.pos<-joint%>%group_by(phenotype,experiment)%>%summarise(PD1.pos=mean(PD1=="PD1+"),SD=sd(PD1=='PD1+'))%>%data.frame
+ pd1.pos$SD[which(pd1.pos$experiment=='DLBCL')]<- pd1.pos$SD[which(pd1.pos$experiment=='DLBCL')]/41
+  pd1.pos$SD[which(pd1.pos$experiment!='DLBCL')]<- pd1.pos$SD[which(pd1.pos$experiment!='DLBCL')]/44
+
+  pd1.barGraph<-ggplot(pd1.pos[pd1.pos$phenotype%in%c("CD8","CD4","Endothelial","Macrophage","TREG"),],aes(x=phenotype,y=PD1.pos,fill=experiment))+geom_bar(stat='identity',position='dodge')+geom_errorbar(aes(ymin=PD1.pos-1.96*SD,ymax=PD1.pos+1.96*SD),position=position_dodge())+theme_ipsum(base_family="Arial")+scale_fill_manual(values=c('khaki1','plum2'))+ylab("PD1+ by tertile gate (%)")+ggtitle("PD1+ (%) by tertile gating within experiment")
+
+
+
+
+ tim3.pos<-joint%>%group_by(phenotype,experiment)%>%summarise(TIM3.pos=mean(TIM3=="TIM3+"),SD=sd(TIM3=='TIM3+'))%>%data.frame
+ tim3.pos$SD[which(tim3.pos$experiment=='DLBCL')]<- tim3.pos$SD[which(tim3.pos$experiment=='DLBCL')]/41
+  tim3.pos$SD[which(tim3.pos$experiment!='DLBCL')]<- tim3.pos$SD[which(tim3.pos$experiment!='DLBCL')]/44
+
+   tim3.barGraph<-ggplot(tim3.pos[tim3.pos$phenotype%in%c("CD8","CD4","Endothelial","Macrophage","TREG"),],aes(x=phenotype,y=TIM3.pos,fill=experiment))+geom_bar(stat='identity',position='dodge')+geom_errorbar(aes(ymin=TIM3.pos-1.96*SD,ymax=TIM3.pos+1.96*SD),position=position_dodge())+theme_ipsum(base_family="Arial")+scale_fill_manual(values=c('khaki1','plum2'))+ylab("TIM3+ by tertile gate (%)")+ggtitle("TIM3+ (%) by tertile gating within experiment")
+
+
+ grid.arrange(pdl1.barGraph,pd1.barGraph,tim3.barGraph,ncol=2,nrow=2)
+
 
 
 

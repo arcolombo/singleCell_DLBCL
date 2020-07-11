@@ -128,8 +128,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 }
 
-zScorePatientExpression
-function(full.dn4=NULL,markers=NULL,ROIID.column=NULL){
+zScorePatientExpression<-function(full.dn4=NULL,markers=NULL,ROIID.column=NULL){
   X3<-full.dn4[,c(markers,ROIID.column)]%>%group_by(ROIID)%>%summarise_all(funs(sd))%>%data.frame
   X2<-full.dn4[,c(markers,ROIID.column)]%>%group_by(ROIID)%>%summarise_all(funs(mean))%>%data.frame
    ###
@@ -448,6 +447,7 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 
 
  #### 
+	library(dplyr)
     zz<- zScorePatientExpression(full.dn4=full.dn4,markers=c(1:31,104:111),ROIID.column=32)
  ### calculate any expression differences across sub-clusters and treatment response.
  ###   
@@ -498,17 +498,23 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 	##Dropped Non-treated and LTF.
 	## CR vs REF
 	t.test(subExpr[which(subExpr[,2]%in%'Tumor_2'),'PDL1'],subExpr[which(subExpr[,2]%in%'Tumor_6'),'PDL1'])
+	
 	#MAC  CR vs REF
 	t.test(subExpr[which(subExpr[,2]%in%'Macrophage_5'),'PDL1'],subExpr[which(subExpr[,2]%in%'Macrophage_2'),'PDL1'])
+	## NND
+	t.test(subExpr[which(subExpr[,2]%in%'Macrophage_5'),'NND.tumor'],subExpr[which(subExpr[,2]%in%'Macrophage_2'),'NND.tumor'])
 	
 
 	# CD4 CR vs REF
 	t.test(subExpr[grepl("CD4_7",subExpr[,2]),'PD1'],subExpr[grepl("CD4_1",subExpr[,2]),'PD1'])
    t.test(subExpr[grepl("CD4_7",subExpr[,2]),'PDL1'],subExpr[grepl("CD4_1",subExpr[,2]),'PDL1'])
-	#t.test(subExpr[grepl("CD4_",subExpr[,2]),'LAG3'],subExpr[grepl("CD4_",subExpr[,2]),'LAG3'])
+ 	## NND 
+  t.test(subExpr[grepl("CD4_7",subExpr[,2]),'NND.tumor'],subExpr[grepl("CD4_1",subExpr[,2]),'NND.tumor'])
 		
 	#CD8  CR vs. REF
 	t.test(subExpr[which(subExpr[,2]%in%'CD8_7'),'PD1'],subExpr[which(subExpr[,2]%in%'CD8_4'),'PD1'])
+	# NND
+  t.test(subExpr[grepl("CD8_7",subExpr[,2]),'NND.tumor'],subExpr[grepl("CD8_4",subExpr[,2]),'NND.tumor'])
 		
 
 ```
@@ -690,7 +696,67 @@ x9p24$X9p24.Status<-factor(x9p24$X9p24.Status,levels=c("Normal","Gain","Loss"))
 	abund<-reshape2::melt(abund)
 	aov(value~ variable*X9p24,abund[grepl("Tumor_",abund$variable),])%>%anova
 ####################
+	### TME
+	tme<-subExpr[!grepl("Tumor_",subExpr[,2]),]
+	km<-kmeans(tme$NND.tumor,centers=4)
+	 tme$kmean.nnd<-km$cluster
+	tme$kmean.status<-km$centers[match(tme$kmean.nnd,rownames(km$centers))]
+	tme$kmean.status<-substr(tme$kmean.status,1,5)
+
+ 	tme$major<-factor(sapply(strsplit(as.character(tme$unsup.subcommunity),"_"),function(x) x[1]))
 	
+	## create a contrast for kmean status 10.14 microns (fixed), comparing within major across treatment groups.
+ 	 tme$interaction<-paste0(tme$response,"_",tme$kmean.status,"_",tme$major)
+	tme$interaction<-factor(tme$interaction)
+
+
+	## create interaction variable.
+	tim3.interaction <- lmer(TIM3 ~ 0+interaction +(1|case), data = tme)
+	pd1.interaction <- lmer(PD1 ~ 0+interaction +(1|case), data = tme)
+	PDL1.interaction <- lmer(PDL1 ~ 0+interaction +(1|case), data = tme)
+
+	##custom contrast comparing CR vs REF on each TME at 10 microns.
+   interact_noint <- rbind(
+	grandMean=rep(1,34)/35,
+	cd4.10.ref.vs.cr=rep(0,34)/35,
+	cd8.10.ref.vs.cr=rep(0,34)/35,
+	mac.10.ref.vs.cr=rep(0,34)/35,
+	treg.10.ref.vs.cr=rep(0,34)/35
+	   )
+
+  interact_noint[2,which(levels(tme$interaction)=="CR_10.13_CD4")]<-(-1)
+  interact_noint[2,which(levels(tme$interaction)=="Primary refract_10.13_CD4")]<-1
+
+  interact_noint[3,which(levels(tme$interaction)=="CR_10.13_CD8")]<-(-1)
+  interact_noint[3,which(levels(tme$interaction)=="Primary refract_10.13_CD8")]<-1
+
+  interact_noint[4,which(levels(tme$interaction)=="CR_10.13_Macrophage")]<-(-1)
+ interact_noint[4,which(levels(tme$interaction)=="Primary refract_10.13_Macrophage")]<-1
+ interact_noint[5,which(levels(tme$interaction)=="CR_10.13_TREG")]<-(-1)
+ interact_noint[5,which(levels(tme$interaction)=="Primary refract_10.13_TREG")]<-1
+
+
+ 	tim3.int <- glht(tim3.interaction, linfct=interact_noint)
+  	tim3.int.ci<-confint(tim3.int, calpha=univariate_calpha())
+  	tim3.int.ci<- tim3.int.ci$confint%>%data.frame
+	tim3.int.ci$marker<-'TIM3'
+
+ 	pd1.int <- glht(pd1.interaction, linfct=interact_noint)
+  	pd1.int.ci<-confint(pd1.int, calpha=univariate_calpha())
+  	pd1.int.ci<- pd1.int.ci$confint%>%data.frame
+	pd1.int.ci$marker<-'PD1'
+
+	pdl1.int <- glht(PDL1.interaction, linfct=interact_noint)
+  	pdl1.int.ci<-confint(pdl1.int, calpha=univariate_calpha())
+  	pdl1.int.ci<- pdl1.int.ci$confint%>%data.frame
+	pdl1.int.ci$marker<-'PDL1'
+
+
+	
+	
+
+
+
 
 
 	###### 

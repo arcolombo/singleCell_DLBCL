@@ -1542,6 +1542,8 @@ ggplot(communityExp4,aes(x=tumor.5nn.class.unsup,y=PD1,fill=tumor.5nn.class.unsu
   	pd1.global.ci<- pd1.global.ci$confint%>%data.frame
 	pd1.global.ci$marker<-'PD1'
 
+
+
 ```
 
 ### Primary TME interactions in the context of tumor topology
@@ -2066,6 +2068,72 @@ From the signed interactions, in the context of the tumor, we measured the assoc
  ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure6-CD8-5NN-spatialModel-RICO/tumor.cd8.dlbcl/Tumor-analysis-5NN/ROI.4188.CD4_5.png")
 
 
+
+```
+
+### Spatial analysis using the sub-clusters
+ This analyzes the sub-cluster spatial.
+
+
+```{r,eval=FALSE}
+
+ load("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure6-CD8-5NN-spatialModel-RICO/tumor.cd8.dlbcl/unsup.subcommunity-Vito-interactions/p1_15_unsup.subcommunity.phentype.15distance.RData")
+
+
+ ## set up the heatmap.
+########################################
+ 	interact<-p1$pmat
+  rownames(interact)<-gsub("Macrophage_","MAC_",rownames(interact))
+  colnames(interact)<-gsub("Macrophage_","MAC_",colnames(interact))
+
+
+ require(dendsort);require(pvclust)
+  rpt.pv<-pvclust(interact[,!grepl("Tumor",colnames(interact))],nboot=100,method.hclust="average")
+  rpt.dend<-dendsort(hclust(dist(interact[,!grepl("Tumor",colnames(interact))])),isReverse=TRUE)
+  library(ComplexHeatmap);library(dendextend)
+  
+  inth<-Heatmap(interact[,!grepl("Tumor",colnames(interact))],
+                  cluster_rows=rpt.dend,
+                  cluster_columns=rpt.pv$hclust,
+		name="Immune interaction Z-score",
+		rect_gp = gpar(col = "white", lwd = 1))
+
+ tum.pv<-pvclust(interact[,grepl("Tumor",colnames(interact))],nboot=100,method.hclust="average")
+  tum.dend<-dendsort(hclust(dist(interact[,!grepl("Tumor",colnames(interact))])),isReverse=TRUE)
+  library(ComplexHeatmap);library(dendextend)
+
+ inth.tumor<-Heatmap(interact[,grepl("Tumor",rownames(interact))],
+                  cluster_rows=tum.dend,
+                  cluster_columns=tum.pv$hclust,
+		name="Tumor Interaction Z-score",
+		rect_gp = gpar(col = "white", lwd = 1))
+   ### row annotate the native expression.
+
+
+  col_fun <- circlize::colorRamp2(breaks = c((-3), 0, 3),
+                  colors = c("black", "purple", "yellow"),
+                  transparency = 0.02)
+
+  zz<- zScorePatientExpression(full.dn4=full.dn4.5nn2,markers=c(1:31,104:111),ROIID.column=32)
+  	interact<-p1$pmat
+    # interact<-cd8.tumor.p2$pmat
+  nd.omit<-unique(zz$ROIID[which(zz$treatment.status=="ND")])
+
+  input<-zz%>%group_by(tumor.5nn.class.unsup)%>%summarise
+
+allAssembleNeighborhoodExpression(zz=zz,jointDesign,
+	phenotypeCommunity="tumor.5nn.class.unsup",groupBy="case")
+
+  rownames(input)<-input$Var1
+  input<-input[,-1]	
+  input<-input[match(rownames(interact),rownames(input)),]
+  rownames(input)<-gsub("Macrophage_","MAC_",rownames(input))
+
+ 
+   
+     native<-Heatmap(scale(input),name="Measurement mean",
+	col=col_fun)
+  native+inth+inth.tumor
 
 
 

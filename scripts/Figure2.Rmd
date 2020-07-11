@@ -102,8 +102,176 @@ function(full.dn4=NULL,markers=NULL,ROIID.column=NULL){
   } 
 
 
+color_clusters <- c("#DC050C", "#FB8072", "#1965B0", "#7BAFDE", "#882E72", 
+  "#B17BA6", "#FF7F00", "#FDB462", "#E7298A", "#E78AC3", 
+  "#33A02C", "#B2DF8A", "#55A1B1", "#8DD3C7", "#A6761D", 
+  "#E6AB02", "#7570B3", "#BEAED4", "#666666", "#999999", 
+  "#aa8282", "#d4b7b7", "#8600bf", "#ba5ce3", "#808000", 
+  "#aeae5c", "#1e90ff", "#00bfff", "#56ff0d", "#ffff00")
+
+ getPhenoColors<-function(full.dn4){
+ require(circlize)
+  tsn<-full.dn4[which(!is.na(full.dn4$tSNE1) & !is.na(full.dn4$tSNE2)),c("tSNE1",
+	"tSNE2",
+	"Cell_CD20",
+	"Cell_CD3",
+	"Cell_CD4",
+	"Cell_CD31",
+	"Cell_CD4",
+	"Cell_CD68",
+	"Cell_CD8",
+	"Cell_FOXP3",
+	"Cell_BCL2",
+	"uniqueLabel","response","ROIID",
+	"unsup.subcommunity")]
+  ##balanced response representation.
+   table(tsn$response)
+  tsn$primary.phenotype<-as.character(tsn$unsup.subcommunity)
+ tsn$primary.phenotype<-factor(tsn$primary.phenotype)
+   cd8s<-colorRampPalette(c("darkseagreen","green"),20)
+  cd4s<-colorRampPalette(c("lightsteelblue1","blue"),20)
+  macs<-colorRampPalette(c("magenta","maroon4"),20)
+   tregs<-colorRampPalette(c("plum2","purple"),20)
+   tumrs<-colorRampPalette(c("grey24","grey64"),20)
+   phenoColors<-c(cd4s(14)[seq(1,14,2)],
+	cd8s(14)[seq(1,14,2)],"red",macs(12)[seq(1,12,2)],tregs(12)[seq(1,12,2)],tumrs(10))
+
+ names(phenoColors)<-levels(factor(tsn$primary.phenotype))
+   ##manual color change code.
+   phenoColors["Macrophage_2"]<-"darkblue"
+   phenoColors["Macrophage_5"]<-"yellow"
+   phenoColors["CD8_7"]<-"black"
+
+   return(phenoColors)
+ }
 
 
+
+mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6","CD79B","SGK1","MYD88","MYC","NOTCH1","NOTCH2","EZH2","CREBBP"),full.dn4=NULL){
+ ## the mutation of MYD88 is specifically controlled for L265P region.
+ ## the column header for the non-syn SNP annotation for MYD88 is AA.Mutation.Cosmic_v70
+
+   mutations<-read.csv("~/Documents/imageAnalysis/DLBCL/monirath/myData/mutational-genomic-table/TMA CGI genomic data.csv")
+   colnames(mutations)<-gsub("USC076","USC76",colnames(mutations))
+  #  clinic<-read.csv("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-mutation-analysis/patient.clinical.table.csv",header=T)
+     library(XLConnect) 
+   wb<-XLConnect::loadWorkbook("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-mutation-analysis/clinicalDataRevisedFinal_final.xlsx")
+   clinic <- readWorksheet(wb, 1);  
+  clinic$MB<-gsub(" ","",clinic$End..MB)
+ mut.tag<-colnames(mutations)[9:67]
+  mutt<-data.frame(mut.tag,id=sapply(strsplit(gsub("\\.","_",mut.tag),"_"),function(x) x[1])
+) 
+
+  mutt$id[which(mutt[,"id"]=="USC076")]<-"USC76"
+  tag<- as.character(clinic[,"MB"])
+  tag<-gsub(" ","",tag)
+  tag<-data.frame(tag=tag,stringsAsFactors=FALSE)
+  inters<-intersect(tag[,1],mutt$id)
+   key<-data.frame(MB=tag[match(inters,tag[,1]),],stringsAsFactors=FALSE)
+  key$id<-mutt[match(inters,mutt[,2]),1]
+ ##fix a column header
+ ## USC76 has a funcy header.
+ ##
+  casemuts<-mutations[,match(key$id,colnames(mutations))]
+  casemuts$gene.name<-mutations[,"gene_name..Homo_sapiens_ensembl_v74_mRNA."]
+  casemuts$chromosome<-as.character(mutations$Chromosome)
+ casemuts$aminoAcid<-as.character(mutations$AA.Mutation.Cosmic_v70)
+ casemuts$aminoAcid<-gsub( "\"","",mutations$AA.Mutation.Cosmic_v70)
+  casemuts$gene.name<-as.character(casemuts$gene.name)
+ ##for MYD88, the gene name will have the aminoAcid appended.
+  casemuts$gene.name[which(casemuts$gene.name=="MYD88" & casemuts$aminoAcid=="L265P, L265P")]<-"MYD88.L265P"
+  casemuts<-casemuts[which(casemuts$aminoAcid!="S219C, S219C, S219C, S219C" & casemuts$aminoAcid!="M232T, M232T" & casemuts$aminoAcid!="0.999, 0.999" & casemuts$aminoAcid!="S251N, S243N, S251N, S243N"),]
+  casemuts[which(casemuts$gene.name=="MYD88" & casemuts$chromosome==""),"gene.name"]<-"MYD88.L265P"
+ casemuts[which(casemuts$gene.name=="MYD88.L265P" & casemuts$chromosome==""),1:20]<-ifelse(casemuts[which(casemuts$gene.name=="MYD88.L265P" & casemuts$chromosome!=""),1:20]!=0,1,0)
+  casem<- casemuts[which(casemuts$chromosome==""),]
+ mutationsToGather[which(mutationsToGather=="MYD88")]<-"MYD88.L265P"
+  dat<-casem[casem$gene.name%in%mutationsToGather,]
+   ### 
+   for(i in mutationsToGather){
+  key[,i]<-0
+ key[match(colnames(dat)[which(dat[dat$gene.name==i,]==1)],key$id),i]<-1
+   }
+  write.csv(key,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-mutation-analysis/Mutational.CNV.categorical.table.csv")
+  ## append to the clinical sheet
+  clinic2<-clinic[,!colnames(clinic)%in%mutationsToGather]
+ clinic2<-left_join(clinic2,key[,c("MB",mutationsToGather)],by="MB")
+  for(i in mutationsToGather){
+  clinic2[which(is.na(clinic2[,i])), i]<-0
+  }
+ ##add the factor to control for replicates
+  replicate<-model.matrix(~0+clinic2$MB)
+  replicate<-replicate[,which(colSums(replicate)>1)]  
+ colnames(replicate)<-substring(colnames(replicate),11)
+  clinic2<-data.frame(clinic2,replicate)
+ clinic2$WES.avail<-FALSE
+  clinic2$WES.avail[match(key$MB,clinic2$MB)]<-TRUE
+ clinic2$Case_ID<-paste0("Case_",clinic2$Col1)
+  return(clinic2)
+
+}
+
+
+ chiHelperStatus<-function(pheno=NULL,full.dn4=NULL,phenotypeColumn=NULL,mycFeature="MYC.Rearrange",groupA=1){
+ ## sums the phenotype totals per patient across a clinical feature
+  ## we do not use averages, this is penalized for missing phenotypes.
+  ## generalized for other clinical factors.
+  ## Patient level data
+###phenotype column is the pheno cluster column
+ ### mycFetaure is patient clinical var
+ ## groupA is the level of the mycFeature for positive.
+	##use the means to scale the data.
+    message(pheno)
+    primary<-sapply(strsplit(pheno,"_"),function(x) x[1])
+    ta<-as.data.frame.matrix(table(full.dn4$case,full.dn4[,phenotypeColumn]))
+    ta<-ta/(rowSums(ta)+1)
+    ## direct standardization
+    ta<-round(mean(table(full.dn4$case))*ta)
+    ta$MYC<-full.dn4[match(rownames(ta),full.dn4$case),mycFeature]
+    ta2<-ta[,c(pheno,"MYC")]
+    x11<-round(sum(ta2[which(ta2$MYC==groupA),1]))+100
+    x12<-round(sum(ta2[which(ta2$MYC!=groupA),1]))+100
+    ta3<-ta[,grepl(primary,colnames(ta))]
+    ta3<-ta3[,which(colnames(ta3)!=pheno)]
+    ta3$MYC<-ta2$MYC[match(rownames(ta3),rownames(ta2))]
+   ta3<-ta3%>%group_by(MYC)%>%summarise_all(funs(sum))%>%data.frame()
+    x21<-round(sum(as.numeric(ta3[which(ta3$MYC==groupA),-1])))+100
+    x22<-round(sum(as.numeric(ta3[which(ta3$MYC!=groupA),-1])))+100
+    mat<-matrix(c(x11,x21,x12,x22),nrow=2,ncol=2)
+	rownames(mat)<-c(paste0(pheno,"+"),paste0(pheno,"-"))
+	colnames(mat)<-c(paste0(mycFeature,"+"),paste0(mycFeature,"-"))
+ ### need OR with confidence intervals
+     require(epitools)
+     dd<-oddsratio(mat,rev="both")
+	return(dd)
+  }
+
+
+
+
+ logisticRegressionClinicalOdds<-function(pheno=NULL,full.dn4=NULL,phenotypeColumn=NULL,mycFeature=NULL,groupA=1){
+    message(pheno)
+    primary<-sapply(strsplit(pheno,"_"),function(x) x[1])
+    ta<-as.data.frame.matrix(table(full.dn4$case,full.dn4[,phenotypeColumn]))
+    ta<-ta/rowSums(ta)
+    ## direct standardization
+    ta<-round(mean(table(full.dn4$case))*ta)
+	ta<-as.data.frame(scale(ta))
+    ta$feature<-full.dn4[match(rownames(ta),full.dn4$case),mycFeature]
+    ta$feature<-ifelse(ta$feature==groupA,1,0)
+  colnames(ta)[which(colnames(ta)=="feature")]<-mycFeature
+    myForm<-formula(paste0(mycFeature,"~",pheno))
+  dd<-exp(coef(glm(myForm,ta,family='binomial')))
+	return(dd)
+  } 
+
+ ### individual mutations at the class level
+  patientMutationOddsRatio<-function(mutation=NULL){
+   ### odds ratio of mutations
+	print(mutation)
+ ta<-as.data.frame.matrix(table(full.dn4[which(full.dn4$WES.available==TRUE),mutation],full.dn4$COO[which(full.dn4$WES.available==TRUE)]))+200
+  dd<-epitools::oddsratio(as.matrix(ta))
+   return(dd$measure[2,])  
+  }
 
 ```
 
@@ -113,7 +281,7 @@ function(full.dn4=NULL,markers=NULL,ROIID.column=NULL){
  We omitted subjects not determined for chemotherapy treatment. 
 
 ```{r, eval=FALSE}
-
+  library(ComplexHeatmap)
  ## we include the full panel, and morphological features (and DNA).
   zz<- zScorePatientExpression(full.dn4=full.dn4,markers=c(1:31,104:111),ROIID.column=32)
   zz[,c(1:31,32,104:111)]%>%group_by(ROIID)%>%summarise_all(funs(sd))%>%data.frame
@@ -313,7 +481,8 @@ function(full.dn4=NULL,markers=NULL,ROIID.column=NULL){
   size+hans+heats+rowAnnLabeled
 
 
-
+   clinic<-mutationClinicalSheetAssembly(mutationsToGather=c("TP53","BCL2","BCL6","CD79B","SGK1","MYD88","MYC","NOTCH1","NOTCH2","EZH2"),full.dn4=full.dn4.5nn2)
+	
  ## add the double hit c-MYC information.
   myc<-data.frame(ROIID=clinic$Run.ID,
 	bcl2.ihc=clinic$bcl2,
@@ -583,13 +752,7 @@ function(full.dn4=NULL,markers=NULL,ROIID.column=NULL){
 	}) 
   # savePlot(file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure1-lowCD20-revision/comprehensive-cohort-heatmap-Figure1-mutations/Figure2.subCommunity.clinical.mutations.stackedBarplot.labeled.doubleExpressor.png")
 
- ### individual mutations at the class level
-  patientMutationOddsRatio<-function(mutation=NULL){
-   ### odds ratio of mutations
- ta<-as.data.frame.matrix(table(full.dn4[which(full.dn4$WES.available==TRUE),mutation],full.dn4$COO[which(full.dn4$WES.available==TRUE)]))+100
-  dd<-epitools::oddsratio(as.matrix(ta))
-   return(dd$measure[2,])  
-  }
+
 
  mut.or<-sapply(c("TP53",
 	"CD79B",
@@ -601,6 +764,7 @@ function(full.dn4=NULL,markers=NULL,ROIID.column=NULL){
 	"NOTCH2",
 	"EZH2",
 	"X9p24.indicator"),function(x) patientMutationOddsRatio(mutation=x))
+  
 
  print( log(mut.or))
 
