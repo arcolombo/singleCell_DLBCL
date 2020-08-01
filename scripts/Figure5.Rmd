@@ -352,6 +352,19 @@ row.names(pmat) <- rname
  }
 
 
+zScorePatientExpression<-function(full.dn4=NULL,markers=NULL,ROIID.column=NULL){
+  X3<-full.dn4[,c(markers,ROIID.column)]%>%group_by(ROIID)%>%summarise_all(funs(sd))%>%data.frame
+  X2<-full.dn4[,c(markers,ROIID.column)]%>%group_by(ROIID)%>%summarise_all(funs(mean))%>%data.frame
+   ###
+   z<-full.dn4
+  for(cl in unique(full.dn4$ROIID)){
+   for(mark in colnames(X2)[-1]){
+  z[which(z$ROIID==cl),which(colnames(z)==mark)]<- ( z[which(z$ROIID==cl),which(colnames(z)==mark)]-X2[which(X2$ROIID==cl),which(colnames(X2)==mark)])/(X3[which(X3$ROIID==cl),which(colnames(X3)==mark)])
+   }
+ }
+ return(z)
+ }
+
 
 compareRandomNetwork<-function(full.dn4=NULL,N=100,myFormula=formula("NGCB~Tumor_a")
 ){
@@ -1025,6 +1038,22 @@ ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure6-CD8-5NN-spatial
 full.dn4.5nn2$evansZ.cifg<-man3$z[match(full.dn4.5nn2$ROIID,man3$ROI)]
 
  
+```
+
+
+### Associations of the labeled phenotypes and the spatial domains.
+```{r, eval=FALSE}
+
+  ## construct the manual cutting for the DLBCL population.
+load(file="~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.appended.un.filtered.RData")
+ 
+ x<-table(full.dn4$tumor.5nn.umap.relabel,full.dn4$annotated.umap.simple)%>%as.data.frame.matrix
+
+  library(dplyr) 
+  zz<- zScorePatientExpression(full.dn4=full.dn4,markers=c(1:31,104:111),ROIID.column=32)
+
+    subExpr<-zz%>%group_by(tumor.5nn.umap.relabel)%>%summarise(CCR4=mean(Cell_CCR4),PD1=mean(Cell_PD1),CCR4.SD=sd(Cell_CCR4),
+	PD1.SD=sd(Cell_PD1))%>%data.frame
 
 
 ```

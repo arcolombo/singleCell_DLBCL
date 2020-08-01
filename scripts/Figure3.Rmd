@@ -207,6 +207,78 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 }
 
 
+ grabDistanceRange<-function(synth=NULL,uniqueLabel=NULL,k=1,from=NULL,to=NULL){
+  nnd<-as.data.frame(nndist(synth,k=k,by=marks(synth)))
+  colnames(nnd)<-paste0("k_",k,"_",colnames(nnd))
+  for(i in 1:ncol(nnd)){
+  nnd[which(is.infinite(nnd[,i])),i] <-300
+ }##
+   nnd$marks<-marks(synth)
+   nnd$K=1
+   nnd$uniqueLabel<-uniqueLabel 
+  return(nnd)
+  }
+
+ findFirstNearestNeighbor<-function(dn4=NULL,myPheno="tumor.5nn.class.unsup",from="Tumor_d",to="CD4_1",k=1){
+   NND<-c()
+  for(roi in unique(dn4$ROIID)){
+  message(roi)
+  myRoi<-subset(dn4,dn4$ROIID==roi)
+  myRoi[,myPheno]<-factor(myRoi[,myPheno])
+   pipi<-phenographToPPP(case=myRoi,marksCase=myRoi[,c(myPheno,'uniqueLabel')],shift=FALSE)
+  all(coords(pipi)[,1]==myRoi$X_position)
+  all(coords(pipi)[,2]==myRoi$Y_position)
+  types<-split(pipi,marks(pipi)[,myPheno])
+ 
+  if(is.null(types[[from]]) |is.null(types[[to]])){
+  message('skipping')
+  next
+ } ## if check.
+   ##construct convex hull 1 NN
+ ## for each tumor cell,identify 5 NN immune/stroma cells.
+ ##describes how immune/stroma surround tumor.
+  nnd<-cbind(nncross(types[[from]],types[[to]],k=k))
+  nnd$ROIID<-roi
+  nnd$from<-from
+	nnd$to<-to
+	nnd$uniqueLabel<-marks(types[[from]])$uniqueLabel
+  NND<-rbind(NND,nnd)
+ }## For loop
+  return(NND)
+  }##main
+
+
+
+
+
+
+
+ ## phenograph to spatial point patter (PPP) object
+ phenographToPPP<-function(case=NULL,marksCase=NULL,shift=FALSE){
+ suppressPackageStartupMessages( require(spatstat))
+  ##case: the case is the phenographed CSV 
+  ##returns the PPP object, with marks as the original data frame.
+  ##note that the window minimum is set to 0. This **SHOULD** not hopefully interfere with the spatial coordinates.
+ ##this change of min 0 was necessary for clusterset function which conflicted with the window range.
+  if(shift==TRUE){
+  minX<-min(case[,"X_position"])
+  minY<-min(case[,"Y_position"])
+ case[,"X_position"]<-case[,"X_position"]-minX
+ case[,"Y_position"]<-case[,"Y_position"]-minY
+    mypat<-ppp(case[,"X_position"],case[,"Y_position"],c(min(case[,"X_position"]),summary(case[,"X_position"])[6]),c(min(case[,"Y_position"]),summary(case[,"Y_position"])[6]),marks=marksCase)
+  ##shifting via spatstat causes non-stationary errors. FIXME: use manual shifting of coordinates prior   
+ #mypat<-spatstat::shift(mypat,c(-minX,-minY))
+  }else{
+    #mypat<-ppp(case[,"X_position"],case[,"Y_position"],c(0,summary(case[,"X_position"])[6]),c(0,summary(case[,"Y_position"])[6]),marks=marksCase)
+ mypat<-ppp(case[,"X_position"],case[,"Y_position"],c(min(case[,"X_position"]),max(case[,"X_position"])),c(min(case[,"Y_position"]),max(case[,"Y_position"])),marks=marksCase) 
+ } 
+
+ ## scale in  micrometers
+   unitname(mypat)<-"micrometer"
+
+  return(mypat)
+ }
+
 
 ```
 
@@ -215,7 +287,12 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 
 ```{r, eval=FALSE}
 
-  load("~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.filtered.RData")
+ # load("~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.filtered.RData")
+
+ 
+ load(file="~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.appended.un.filtered.RData")
+
+
 
   library(circlize)
   ### plot a tSNE of these populations.
@@ -374,7 +451,7 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 ```{r,eval=FALSE}
 
 	### immune.proportions
-   subCommunityAbundanceBarPlot(full.dn4)
+   subCommunityAbundanceBarPlot(full.dn4[which(full.dn4$unsup.subcommunity!='Tumor_11'),])
 
  ## the immune proportions perform T-testing on the selected populations.	
   tums<-full.dn4[which(full.dn4$treatment.status!="ND"& full.dn4$immune.status!="immune"),]
@@ -445,12 +522,45 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 	
 	 openxlsx::saveWorkbook(fig2,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure3-tables-figures-4-28/Figure3.B.tableData-FINAL.xlsx",overwrite=TRUE)
 
+  full.dn4$unsup.tumor<-as.character(full.dn4$unsup.subcommunity)
+  full.dn4$unsup.tumor[grepl("Tumor_",full.dn4$unsup.tumor)]<-"Tumor"
 
  #### 
+ ### find first nearest neighbor distance.
+   ### heatmap of states, clustered by  
+  ### add the nearest neighbor distance.
+    roiDist<-c()
+  for(roi in unique(full.dn4$ROIID)){
+  message(roi)
+  myroi<-subset(full.dn4,full.dn4$ROIID==roi)
+    p<-phenographToPPP(case=myroi,marksCase=factor(myroi$unsup.tumor),shift=FALSE)
+   myroi2<-distanceCalculationROI(synth=p,zz=myroi,cluster.column="unsup.tumor")
+  myroi2$cluster<-factor(myroi2$cluster)
+  roiDist<-rbind(roiDist,myroi2[,c("k_1_Tumor","uniqueLabel")])
+ }
+  # full.dn4$subcommunity.nndTumor<-25
+   all(full.dn4$uniqueLabel==roiDist$uniqueLabel)
+  full.dn4$k_1_Tumor<-roiDist$k_1_Tumor
+ 
+
+
+ 
+
+
+
 	library(dplyr)
     zz<- zScorePatientExpression(full.dn4=full.dn4,markers=c(1:31,104:111),ROIID.column=32)
  ### calculate any expression differences across sub-clusters and treatment response.
  ###   
+  ## ignore Tumor_11 cluster
+   zz<-zz[which(zz$unsup.subcommunity!="Tumor_11"),]
+
+  #id<-intersect(zz$uniqueLabel,roiDist$uniqueLabel)
+   #all(zz$uniqueLabel[match(id,zz$uniqueLabel)]==roiDist$uniqueLabel[match(id,roiDist$uniqueLabel)])
+ #zz$k_1_Tumor[match(id,zz$uniqueLabel)]<-roiDist$k_1_Tumor[match(id,roiDist$uniqueLabel)]
+
+
+
   subExpr<-zz%>%group_by(ROIID,unsup.subcommunity)%>%summarise(CXCR3=mean(Cell_CXCR3),
 	CCR4=mean(Cell_CCR4),
 	BCL2=mean(Cell_BCL2),
@@ -465,12 +575,13 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 	ICOS=mean(Cell_ICOS),
 	Vista=mean(Cell_Vista),
 	CD45RO=mean(Cell_CD45RO),
+	CD45RA=mean(Cell_CD45RA),
 	CD206=mean(Cell_CD206),
 	NND.tumor=mean(k_1_Tumor),
 	HLADR=mean(Cell_HLADR),
 	CD206=mean(Cell_CD206))%>%data.frame
 
-
+  subExpr$unsup.subcommunity<-droplevels(subExpr$unsup.subcommunity)
 
  
 	##split the NND by biological distances.	
@@ -515,6 +626,9 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 	t.test(subExpr[which(subExpr[,2]%in%'CD8_7'),'PD1'],subExpr[which(subExpr[,2]%in%'CD8_4'),'PD1'])
 	# NND
   t.test(subExpr[grepl("CD8_7",subExpr[,2]),'NND.tumor'],subExpr[grepl("CD8_4",subExpr[,2]),'NND.tumor'])
+
+ ## need to add labels.
+
 		
 
 ```
@@ -531,12 +645,12 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 
   
 	### model the effect estimates for global trends.
-	lag3.eff<-model.tables(lag3,'effects')
-	cd45ro.eff<-model.tables(cd45ro,'effects')
-	pd1.eff<-model.tables(pd1,'effects')
-	ki67.eff<-model.tables(ki67,'effects')
-	tim3.eff<-model.tables(tim3,'effects')
-	dr.eff<-model.tables(hladr,'effects')
+	#lag3.eff<-model.tables(lag3,'effects')
+	#cd45ro.eff<-model.tables(cd45ro,'effects')
+	#pd1.eff<-model.tables(pd1,'effects')
+	#ki67.eff<-model.tables(ki67,'effects')
+	#tim3.eff<-model.tables(tim3,'effects')
+	#dr.eff<-model.tables(hladr,'effects')
 
 	## global model. more comprehensive.
 	####	total levels is 37
@@ -597,7 +711,10 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 	ki67.global <- lmer(Ki67 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
 	vista.global <- lmer(Vista ~ 0+unsup.subcommunity +(1|case), data = subExpr)
 	bcl6.global <- lmer(BCL6 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	bcl2.global <- lmer(BCL2 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
 	cd206.global <- lmer(CD206 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	cd45ro.global <- lmer(CD45RO ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	cd45ra.global <- lmer(CD45RA ~ 0+unsup.subcommunity +(1|case), data = subExpr)
 
   tim3.global <- glht(tim3.global, linfct=alpha_noint)
   tim3.global.ci<-confint(tim3.global, calpha=univariate_calpha())
@@ -650,6 +767,12 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
   	bcl6.global.ci<- bcl6.global.ci$confint%>%data.frame
 	bcl6.global.ci$marker<-'BCL6'
 
+	##BCL2
+	 bcl2.global <- glht(bcl2.global, linfct=alpha_noint)
+ 	 bcl2.global.ci<-confint(bcl2.global, calpha=univariate_calpha())
+  	bcl2.global.ci<- bcl2.global.ci$confint%>%data.frame
+	bcl2.global.ci$marker<-'BCL2'
+
 	##ICOS	
 	 icos.global <- glht(icos.global, linfct=alpha_noint)
  	 icos.global.ci<-confint(icos.global, calpha=univariate_calpha())
@@ -668,6 +791,18 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
   	vista.global.ci<- vista.global.ci$confint%>%data.frame
 	vista.global.ci$marker<-'vista'
 
+	## CD45RO
+	 cd45ro.global <- glht(cd45ro.global, linfct=alpha_noint)
+ 	 cd45ro.global.ci<-confint(cd45ro.global, calpha=univariate_calpha())
+  	cd45ro.global.ci<- cd45ro.global.ci$confint%>%data.frame
+	cd45ro.global.ci$marker<-'CD45RO'
+
+	## CD45RA
+	 cd45ra.global <- glht(cd45ra.global, linfct=alpha_noint)
+ 	 cd45ra.global.ci<-confint(cd45ra.global, calpha=univariate_calpha())
+  	cd45ra.global.ci<- cd45ra.global.ci$confint%>%data.frame
+	cd45ra.global.ci$marker<-'CD45RA'
+
 
 	globalExpr<-rbind(tim3.global.ci,
 	ki.global.ci,
@@ -678,10 +813,16 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 	pdl1.global.ci,	
 	hladr.global.ci,
 	bcl6.global.ci,
+	bcl2.global.ci,
 	icos.global.ci,
 	cd206.global.ci,
-	vista.global.ci)
+	vista.global.ci,
+	cd45ro.global.ci,
+	cd45ra.global.ci)
 
+	globalExpr$pheno<-sapply(strsplit(rownames(globalExpr),"\\."),function(x) x[1])
+
+ 	
 	## use a SL regression on the 9p24 status and PDL1 on tumor.
 	x9p24<-zz[which(zz$subType.correction=='Tumor'),]%>%group_by(case,unsup.subcommunity,X9p24.Status)%>%summarise(PDL1=mean(Cell_PDL1))%>%data.frame
 	

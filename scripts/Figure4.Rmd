@@ -17,6 +17,30 @@ knitr::opts_chunk$set(echo = TRUE)
 ### Helper Functions
 ```{r, eval=FALSE}
 
+ logisticRegressionClinicalOdds<-function(pheno=NULL,full.dn4=NULL,phenotypeColumn=NULL,mycFeature=NULL,groupA=1){
+    message(pheno)
+  #  primary<-sapply(strsplit(pheno,"_"),function(x) x[1])
+    ta<-as.data.frame.matrix(table(full.dn4$case,full.dn4[,phenotypeColumn]))
+    ta<-ta/rowSums(ta)
+    ## direct standardization
+    ta<-round(mean(table(full.dn4$case))*ta)
+	ta<-as.data.frame(scale(ta))
+    ta$feature<-full.dn4[match(rownames(ta),full.dn4$case),mycFeature]
+    ta$feature<-ifelse(ta$feature==groupA,1,0)
+  colnames(ta)[which(colnames(ta)=="feature")]<-mycFeature
+    myForm<-formula(paste0(mycFeature,"~",pheno))
+	fit<-glm(myForm,ta,family='binomial')
+	ci<-exp(confint(fit))
+  dd<-exp(coef(glm(myForm,ta,family='binomial')))
+   dd<-cbind(ci,dd)%>%data.frame
+  colnames(dd)<-c("lower.2.5%","upper.97.5%",paste0("OddsRatio.",groupA))
+  pv<-summary(fit)%>%coef%>%data.frame
+  dd$p<-pv[,4]
+	return(dd[pheno,])
+  } 
+
+
+
  getIntegratedColors<-function(immune=NULL){
    require(circlize)
     
@@ -282,6 +306,34 @@ color_clusters=NULL){
    ids<-sample(dat$uniqueLabel,N,replace=FALSE) 
   return(ids)
  }
+
+
+## phenograph to spatial point patter (PPP) object
+ phenographToPPP<-function(case=NULL,marksCase=NULL,shift=FALSE){
+ suppressPackageStartupMessages( require(spatstat))
+  ##case: the case is the phenographed CSV 
+  ##returns the PPP object, with marks as the original data frame.
+  ##note that the window minimum is set to 0. This **SHOULD** not hopefully interfere with the spatial coordinates.
+ ##this change of min 0 was necessary for clusterset function which conflicted with the window range.
+  if(shift==TRUE){
+  minX<-min(case[,"X_position"])
+  minY<-min(case[,"Y_position"])
+ case[,"X_position"]<-case[,"X_position"]-minX
+ case[,"Y_position"]<-case[,"Y_position"]-minY
+    mypat<-ppp(case[,"X_position"],case[,"Y_position"],c(min(case[,"X_position"]),summary(case[,"X_position"])[6]),c(min(case[,"Y_position"]),summary(case[,"Y_position"])[6]),marks=marksCase)
+  ##shifting via spatstat causes non-stationary errors. FIXME: use manual shifting of coordinates prior   
+ #mypat<-spatstat::shift(mypat,c(-minX,-minY))
+  }else{
+    #mypat<-ppp(case[,"X_position"],case[,"Y_position"],c(0,summary(case[,"X_position"])[6]),c(0,summary(case[,"Y_position"])[6]),marks=marksCase)
+ mypat<-ppp(case[,"X_position"],case[,"Y_position"],c(min(case[,"X_position"]),max(case[,"X_position"])),c(min(case[,"Y_position"]),max(case[,"Y_position"])),marks=marksCase) 
+ } 
+
+ ## scale in  micrometers
+   unitname(mypat)<-"micrometer"
+
+  return(mypat)
+ }
+
 
 
 
@@ -594,9 +646,11 @@ integratedPrimaryCommunityBarPlot<-function(cleandat=NULL){
  ## add the immune populations.
   ## MAC, TREG, CD4, CD8.
    cd4.prop<-computeImmuneProportions(full.dn4=tums,primary="CD4",clinicalFactor="experiment")
-   cd4s<-getExperimentColors()
-    cd4.exp<-ggplot(cd4.prop,aes(x=names,y=means,fill=response))+geom_bar(stat='identity',position=position_dodge())+geom_errorbar(aes(ymin=abs(means-2*se), ymax=means+2*se), width=.2,
-                 position=position_dodge(.9))+theme_bw(base_size=14)+ theme(axis.text.x = element_text(angle = 45, hjust = 1))+ylab("TME proportion (%)")+xlab("TME communities")+scale_fill_manual(values=cd4s)
+  cd4.prop<-cd4.prop[which(cd4.prop$means>0),]
+    cd4s<-getExperimentColors()
+    cd4.exp<-ggplot(cd4.prop,aes(x=names,y=means,fill=response))+geom_bar(stat='identity',position=position_dodge(),colour='black')+geom_errorbar(aes(ymin=abs(means-2*se), ymax=means+2*se), width=.2,
+                 position=position_dodge(.9))+theme_bw(base_size=14)+ theme(axis.text.x = element_text(angle = 45, hjust = 1,color='black',size=17),
+	axis.text.y=element_text(size=15,color='black'))+ylab("TME proportion (%)")+xlab("TME communities")+scale_fill_manual(values=cd4s)
   cd4.exp
  ### immune proportions
   savePlot(file="TME.primary.immune.proportions.png")
@@ -640,6 +694,42 @@ treg.t<-computeImmuneProportionsTTest(full.dn4=tums,primary="TREG",clinicalFacto
     return(cd4.exp)
  }
 
+chiHelperMeanScale.IntegrationComparisonEnrichment<-function(pheno=NULL,full.dn4=NULL,
+	phenotypeColumn="unsup.subcommunity",
+	conditionOnPrimary=FALSE,contrastFactor='COO',
+	groupA='GCB'){
+ ### the features are average to scale the data.
+	##only works for HANS COO
+	##phenotype column is the column of phenoytpe levels.
+    message(pheno)
+    primary<-sapply(strsplit(pheno,"_"),function(x) x[1])
+    ta<-as.data.frame.matrix(table(full.dn4$case,full.dn4[,phenotypeColumn]))
+    ta<-ta/rowSums(ta)
+    ## direct standardization
+    ta<-round(mean(table(full.dn4$case))*ta)
+    ta$COO<-full.dn4[match(rownames(ta),full.dn4$case),contrastFactor]
+    ta2<-ta[,c(pheno,"COO")]
+    x11<-round(mean(ta2[which(ta2$COO==groupA),1]))+1
+    x12<-round(mean(ta2[which(ta2$COO!=groupA),1]))+1
+	##conditioned on the same phenotype family.
+  if(conditionOnPrimary==TRUE){
+    ta3<-ta[,grepl(primary,colnames(ta))]
+  }else{
+      ta3<-ta[,which(colnames(ta)!=pheno)]
+  }
+   ##ta3 object is negative for the phenotype
+    ta3$COO<-full.dn4[match(rownames(ta3),full.dn4$case),contrastFactor]
+   ta3<-ta3%>%group_by(COO)%>%summarise_all(funs(mean))%>%data.frame()
+    x21<-round(mean(as.numeric(ta3[which(ta3$COO==groupA),which(colnames(ta3)!="COO")])))+1
+    x22<-round(mean(as.numeric(ta3[which(ta3$COO!=groupA),which(colnames(ta3)!="COO")])))+1
+    mat<-matrix(c(x11,x21,x12,x22),nrow=2,ncol=2)
+	rownames(mat)<-c(paste0(pheno,"+"),paste0(pheno,"-"))
+	colnames(mat)<-c(groupA,paste0("not.",groupA))
+ ### need OR with confidence intervals
+     require(epitools)
+     dd<-oddsratio(mat,rev="both")
+	return(dd)
+  }
   
 
 plotIntegrationPlots.IMMUNE<-function(integ=NULL){
@@ -783,12 +873,54 @@ tme.state<-grid.arrange(pdl1.tme,
  }
 
 
+ grabDistanceRange<-function(synth=NULL,uniqueLabel=NULL,k=1,from=NULL,to=NULL){
+  nnd<-as.data.frame(nndist(synth,k=k,by=marks(synth)))
+  colnames(nnd)<-paste0("k_",k,"_",colnames(nnd))
+  for(i in 1:ncol(nnd)){
+  nnd[which(is.infinite(nnd[,i])),i] <-300
+ }##
+   nnd$marks<-marks(synth)
+   nnd$K=1
+   nnd$uniqueLabel<-uniqueLabel 
+  return(nnd)
+  }
+
+
+distanceCalculationROI<-function(synth=NULL,zz=NULL,cluster.column="cd8.case.cluster"){
+  require(Rphenograph)
+  nnd1<-grabDistanceRange(synth,uniqueLabel=zz$uniqueLabel,k=1)
+    nnd2<-grabDistanceRange(synth,uniqueLabel=zz$uniqueLabel,k=2)
+  nnd3<-grabDistanceRange(synth,uniqueLabel=zz$uniqueLabel,k=3)
+  nnd4<-grabDistanceRange(synth,uniqueLabel=zz$uniqueLabel,k=4)
+  nnd5<-grabDistanceRange(synth,uniqueLabel=zz$uniqueLabel,k=5)
+  #nnd6<-grabDistanceRange(synth,uniqueLabel=zz$uniqueLabel,k=6)
+  #nnd7<-grabDistanceRange(synth,uniqueLabel=zz$uniqueLabel,k=7)
+  #nnd8<-grabDistanceRange(synth,uniqueLabel=zz$uniqueLabel,k=8)
+  
+  ## assemble
+  nnd<-cbind(nnd1[,grepl("k_",colnames(nnd1))],
+	nnd2[,grepl("k_",colnames(nnd2))],
+	nnd3[,grepl("k_",colnames(nnd3))],
+	nnd4[,grepl("k_",colnames(nnd4))],
+	nnd5[,grepl("k_",colnames(nnd5))])
+	#nnd6[,grepl("k_",colnames(nnd6))],
+	#nnd7[,grepl("k_",colnames(nnd7))],
+	#nnd8[,grepl("k_",colnames(nnd8))])
+    nnd$uniqueLabel<-zz$uniqueLabel
+    nnd$marks<-marks(synth)
+   stopifnot(all(nrow(nnd)==nrow(zz)))
+     nnd$ROIID<-zz$ROIID
+    nnd$cluster<-zz[,cluster.column]
+  return(nnd)
+}
+
+
 ```
 
 ### Hodgkin Lymphoma phenotype
 ```{r,eval=FALSE}
 
-
+  library(spatstat)
   library(data.table)
   library(dplyr)
   library(magrittr)
@@ -1002,6 +1134,7 @@ tme.state<-grid.arrange(pdl1.tme,
   color_clusters=NULL)
  
  # savePlot(file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/figure4-final/steidl.allCases.metaCluster.noFiltering.png")
+
 
 
 
@@ -1727,3 +1860,587 @@ dlbcl.sub<-zz[match(randomSamps,zz$uniqueLabel),c("Cell_CCR4",
 
 
 ```
+
+
+
+### PD-1 TREG comparison across diseases
+```{r,eval=FALSE}
+
+
+ load(file="~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.appended.un.filtered.RData")
+
+ dlbcl<-full.dn4[full.dn4$subType.correction%in%c("TREG","Tumor"),]
+ dlbcl$integ<-as.character(dlbcl$subType.correction)
+   dlbcl$integ[which(dlbcl$integ=='TREG')]<-paste0(dlbcl$PD1.status[which(dlbcl$integ=='TREG')],"_TREG")
+ dlbcl$integ[which(dlbcl$integ=='Tumor')]<-paste0(dlbcl$PDL1.status[which(dlbcl$integ=='Tumor')],"_Tumor")
+
+ x<-table(dlbcl$ROIID,dlbcl$integ)%>%as.data.frame.matrix()
+
+ ## calculate distance.
+  dlbclDist<-c()
+  for(roi in rownames(x)[which(x[,1]>10)]){
+  message(roi)
+  myroi<-subset(dlbcl,dlbcl$ROIID==roi)
+    p<-phenographToPPP(case=myroi,marksCase=factor(myroi$integ),shift=FALSE)
+   myroi2<-distanceCalculationROI(synth=p,zz=myroi,cluster.column="integ")
+  myroi2$cluster<-factor(myroi2$cluster)
+  dlbclDist<-rbind(dlbclDist,myroi2)
+ }
+  
+
+ ## CHL 
+ load("~/Documents/imageAnalysis/steidl/steidl-spatialAnalysis9-11/fold-revised-10-5/dn4.final.foldRevised.RData")
+
+ dn4$PDL1.class<-cut2(dn4$PDL1,g=3)
+ dn4$PDL1.status<-'PDL1.low'
+ dn4$PDL1.status[which(dn4$PDL1.class=='[0.223,0.366)')]<-'PDL1.medium'
+  dn4$PDL1.status[which(dn4$PDL1.class=='[0.366,1.000]')]<-'PDL1.high'
+
+ chl<-dn4[dn4$spatial.annotation%in%c("TREG","CD30.HRS"),]
+ chl$integ<-as.character(chl$spatial.annotation)
+  chl$integ[which(chl$integ=='TREG')]<-paste0(chl$PD1.status[which(chl$integ=='TREG')],"_TREG")
+
+chl$integ[which(chl$integ=='CD30.HRS')]<-paste0(chl$PDL1.status[which(chl$integ=='CD30.HRS')],"_HRS")
+
+ ## CHL distance.
+  xx<-table(chl$ROIID,chl$integ)%>%as.data.frame.matrix()
+
+ ## calculate distance.
+  chlDist<-c()
+  for(roi in rownames(xx)[which(xx[,1]>10)]){
+  message(roi)
+  myroi<-subset(chl,chl$ROIID==roi)
+    p<-phenographToPPP(case=myroi,marksCase=factor(myroi$integ),shift=FALSE)
+   myroi2<-distanceCalculationROI(synth=p,zz=myroi,cluster.column="integ")
+  myroi2$cluster<-factor(myroi2$cluster)
+  chlDist<-rbind(chlDist,myroi2)
+ }
+
+
+ ## analyze the PD1+TREG distances to PDL1+/- tumors.
+ dtreg<-dlbclDist[which(dlbclDist$cluster=='PD1.high_TREG'),]
+  ctreg<-chlDist[which(chlDist$cluster=='PD1.high_TREG'),]
+ cc<-ctreg%>%group_by(ROIID)%>%summarise(PDL1Tumor=mean(k_1_PDL1.high_HRS),PDL1NegTumor=mean(k_1_PDL1.low_HRS))%>%data.frame
+
+ dd<-dtreg%>%group_by(ROIID)%>%summarise(PDL1Tumor=mean(k_1_PDL1.high_Tumor),PDL1NegTumor=mean(k_1_PDL1.low_Tumor))%>%data.frame
+
+
+```
+
+### Neighborhood comparisons from the perspective of tumors.
+```{r, eval=FALSE}
+
+ ## load the DLBCL UMAP annotations.
+ load("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure3-tables-figures-4-28/p1_15_annotated.umap.simple.15distance.025.RData")
+
+  dlbcl<-p1
+  datp<-dlbcl$dat_p 
+   datp$FirstLabel.B<-as.character(datp$FirstLabel)
+   datp$SecondLabel.B<-as.character(datp$SecondLabel)
+  datp$FirstLabel.B[grepl("umor",datp$FirstLabel.B)]<-'Tumor'
+   datp$SecondLabel.B[grepl("umor",datp$SecondLabel.B)]<-'Tumor'
+   bct<-datp[which(datp$FirstLabel.B=='Tumor'& datp$sigval>=0),]
+  bct2<-bct
+ bct<-bct%>%group_by(SecondLabel.B)%>%summarise(total=mean(sigval),SD=sd(sigval),N=n())%>%data.frame
+  bct$tumor="DLBCL"
+  bct$SD<-bct$SD/sqrt(bct$N)
+   bct$error<-qt(0.975,df=(bct$N-1))*bct$SD  
+ bct<-bct[which(bct$SecondLabel.B!='Tumor' & bct$SecondLabel.B!='none'),]
+ bct$Probability<-bct$total/sum(bct$total)
+ bct$Expected<-bct$Probability* bct$N  
+  
+
+ ## load CHL
+ load("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/chl-spatial/chl.p1_15_CHL_annotatedLabel.simple.label.15distance.025.RData")
+   datp<-chl.p1$dat_p 
+  datp[which(is.na(datp$FirstLabel)),'FirstLabel']<-'Endothelial'
+   datp[which(is.na(datp$SecondLabel)),'SecondLabel']<-'Endothelial'
+
+   datp$FirstLabel.B<-as.character(datp$FirstLabel)
+   datp$SecondLabel.B<-as.character(datp$SecondLabel)
+  datp$FirstLabel.B[grepl("HRS",datp$FirstLabel.B)]<-'Tumor'
+   datp$SecondLabel.B[grepl("HRS",datp$SecondLabel.B)]<-'Tumor'
+  
+   hrs<-datp[which(datp$FirstLabel.B=='Tumor'& datp$sigval>=0),]
+  hrs2<-hrs
+   hrs<-hrs%>%group_by(SecondLabel.B)%>%summarise(total=mean(sigval),SD=sd(sigval),N=n())%>%data.frame
+  hrs[is.na(hrs$SD),'SD']<-1
+  hrs$tumor="cHL"
+  hrs$SD<-hrs$SD/sqrt(hrs$N)
+  hrs$error<-qt(0.975,df=(hrs$N-1))*hrs$SD  
+ hrs<-hrs[which(hrs$SecondLabel.B!='Tumor' & hrs$SecondLabel.B!='none'),]
+ hrs$Probability<-hrs$total/sum(hrs$total)
+ hrs$Expected<-hrs$Probability* bct$N  
+
+
+## we observe tregs in chl, but it is sparse TME interactions.
+```
+
+### Distance analysis from POV of tumors
+ From the perspective of tumors, we look at the nearest distances of specific phenotypes (1-NN) and average across the experiments.
+```{r,eval=FALSE}
+ load("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/chl-spatial/dn4.fullAoki.labeled.RData")
+ library(Hmisc)
+  dn4$TIM3.cut<-cut2(dn4$TIM3,g=3)
+  dn4$TIM3.class<-'TIM3.low'
+  dn4$TIM3.class[which(dn4$TIM3.cut=='[0.205,0.341)')]<-'TIM3.medium'
+  dn4$TIM3.class[which(dn4$TIM3.cut=='[0.341,1.000]')]<-'TIM3.high'
+ ##PDL1 TAM
+  dn4$PDL1.cut<-cut2(dn4$PDL1,g=3)
+  dn4$PDL1.class<-'PDL1.low'
+  dn4$PDL1.class[which(dn4$PDL1.cut=='[0.223,0.366)')]<-'PDL1.medium'
+  dn4$PDL1.class[which(dn4$PDL1.cut=='[0.366,1.000]')]<-'PDL1.high'
+
+  dn4$PD1.cut<-cut2(dn4$PD1,g=2)
+  dn4$PD1.class<-'PD1.low'
+  dn4$PD1.class[which(dn4$PD1.cut=='[0.133,1.000]')]<-'PD1.high'
+
+  dn4$CCR4.cut<-cut2(dn4$CCR4,g=3)
+  dn4$CCR4.class<-'CCR4.low'
+  dn4$CCR4.class[which(dn4$CCR4.cut=='[0.183,0.332)')]<-'CCR4.medium' 
+  dn4$CCR4.class[which(dn4$CCR4.cut=='[0.332,1.000]')]<-'CCR4.high'
+ 
+ ##ICOS
+  dn4$ICOS.cut<-cut2(dn4$ICOS,g=3)
+  dn4$ICOS.class<-'ICOS.low'
+  dn4$ICOS.class[which(dn4$ICOS.cut=='[0.0682,0.1655)')]<-'ICOS.medium' 
+  dn4$ICOS.class[which(dn4$ICOS.cut=='[0.1655,1.0000]')]<-'ICOS.high'
+
+ dn4$ICOS.CCR4.class<-'none'
+ dn4$ICOS.CCR4.class[which(dn4$ICOS.class=='ICOS.high' & dn4$CCR4.class=='CCR4.high')]<-"ICOS.CCR4"
+
+  dn4$manual.annotation<-as.character(dn4$spatial.annotation)
+  dn4$manual.annotation[which(dn4$manual.annotation=='CD4')]<-paste0("CD4_",dn4$TIM3.class[which(dn4$manual.annotation=='CD4')])
+  dn4$manual.annotation[which(dn4$manual.annotation=='CD8')]<-paste0("CD8_",dn4$TIM3.class[which(dn4$manual.annotation=='CD8')])
+  ## TAM PDL1 
+ dn4$manual.annotation[which(dn4$manual.annotation=='Macrophage')]<-paste0("MAC_",dn4$PDL1.class[which(dn4$manual.annotation=='Macrophage')])
+ ## CCR4 TREG
+ dn4$manual.annotation[which(dn4$manual.annotation=='TREG')]<-paste0("TREG_",dn4$ICOS.CCR4.class[which(dn4$manual.annotation=='TREG')])
+
+ ## compute distances. 
+  ##gather all 1-NN distances.
+
+  roiDist<-as.data.frame(matrix(350,nrow=nrow(dn4),ncol=length(unique(dn4$manual.annotation))))
+    colnames(roiDist)[1:length(unique(dn4$manual.annotation))]<-paste0("k_1_",unique(dn4$manual.annotation)) 
+ roiDist$uniqueLabel<-dn4$uniqueLabel
+  roiDist$ROIID<-dn4$ROIID
+  roiDist$cluster<-roiDist$marks<-'none'
+
+  for(roi in unique(dn4$ROIID)){
+  message(roi)
+  myroi<-subset(dn4,dn4$ROIID==roi)
+    p<-phenographToPPP(case=myroi,marksCase=factor(myroi$manual.annotation),shift=FALSE)
+   myroi2<-distanceCalculationROI(synth=p,zz=myroi,cluster.column="manual.annotation")
+    myroi3<-myroi2[,grepl("k_1_",colnames(myroi2))]
+  myroi3$uniqueLabel<-myroi2$uniqueLabel
+   myroi3$marks<-as.character(myroi2$marks)
+   myroi3$ROIID<-myroi2$ROIID
+  myroi3$cluster<-factor(as.character(myroi2$cluster))
+  roiDist[match(myroi3$uniqueLabel,roiDist$uniqueLabel),colnames(myroi3)]<-myroi3
+ }
+  ##spot checking my code: from a given phenotype toward the selected PDL1M2
+   P<-split(p)
+  all(nncross(P[["CD4_TIM3.high"]],P[["MAC_PDL1.high"]])$dist-myroi2[which(myroi2$marks=='CD4_TIM3.high'),'k_1_MAC_PDL1.high']==0)
+  chlDIST<-roiDist
+ ## summarize from the tumor POV.
+ ## remove tonsil.
+  chlDIST$diagnosis<-dn4$diagnosis
+ chl.hst<-chlDIST[which(chlDIST$marks=='CD30.HRS' & chlDIST$diagnosis%in%c("HDLR","HDMC","HDNS") ),]%>%group_by(ROIID,diagnosis)%>%summarise(CD4TIM3=mean(k_1_CD4_TIM3.high),
+	CD4TIM3low=mean(k_1_CD4_TIM3.low),
+	CD8TIM3=mean(k_1_CD8_TIM3.high),
+	CD8TIM3low=mean(k_1_CD8_TIM3.low),
+	MACPDL1=mean(k_1_MAC_PDL1.high),
+ 	MACPDL1low=mean(k_1_MAC_PDL1.low),
+ 	TREGHST=mean(k_1_TREG_ICOS.CCR4),
+  	TREG=mean(k_1_TREG_none))%>%data.frame
+  rownames(chl.hst)<-chl.hst$ROIID
+  chl.hst<-chl.hst[-1]
+ chl.hst$disease<-'HL'
+ ## construct the manual cutting for the DLBCL population.
+load(file="~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.appended.un.filtered.RData")
+
+  full.dn4$TIM3.cut<-cut2(full.dn4$Cell_Tim3,g=3)
+ full.dn4$TIM3.class<-'TIM3.low'
+  full.dn4$TIM3.class[which(full.dn4$TIM3.cut=='[0.379,0.491)')]<-'TIM3.medium'
+  full.dn4$TIM3.class[which(full.dn4$TIM3.cut=='[0.491,1.000]')]<-'TIM3.high'
+ ##PDL1 TAM
+  full.dn4$PDL1.cut<-cut2(full.dn4$Cell_PDL1,g=3)
+  full.dn4$PDL1.class<-'PDL1.low'
+  full.dn4$PDL1.class[which(full.dn4$PDL1.cut=='[0.291,0.364)')]<-'PDL1.medium'
+  full.dn4$PDL1.class[which(full.dn4$PDL1.cut=='[0.364,1.000]')]<-'PDL1.high'
+
+  full.dn4$PD1.cut<-cut2(full.dn4$Cell_PD1,g=2)
+  full.dn4$PD1.class<-'PD1.low'
+  full.dn4$PD1.class[which(full.dn4$PD1.cut=='[0.152,1.000]')]<-'PD1.high'
+
+  full.dn4$CCR4.cut<-cut2(full.dn4$Cell_CCR4,g=3)
+  full.dn4$CCR4.class<-'CCR4.low'
+  full.dn4$CCR4.class[which(full.dn4$CCR4.cut=='[0.439,0.538)')]<-'CCR4.medium' 
+  full.dn4$CCR4.class[which(full.dn4$CCR4.cut=='[0.538,1.000]')]<-'CCR4.high'
+
+  ## ICOS
+  full.dn4$ICOS.cut<-cut2(full.dn4$Cell_ICOS,g=3)
+  full.dn4$ICOS.class<-'ICOS.low'
+  full.dn4$ICOS.class[which(full.dn4$ICOS.cut=='[0.0374,0.0934)')]<-'ICOS.medium' 
+  full.dn4$ICOS.class[which(full.dn4$ICOS.cut=='[0.0934,1.0000]')]<-'ICOS.high'
+
+ full.dn4$ICOS.CCR4.class<-'none'
+ full.dn4$ICOS.CCR4.class[which(full.dn4$ICOS.class=='ICOS.high' & full.dn4$CCR4.class=='CCR4.high')]<-"ICOS.CCR4"
+
+
+  full.dn4$manual.annotation<-as.character(full.dn4$subType.correction)
+  full.dn4$manual.annotation[which(full.dn4$manual.annotation=='CD4')]<-paste0("CD4_",full.dn4$TIM3.class[which(full.dn4$manual.annotation=='CD4')])
+  full.dn4$manual.annotation[which(full.dn4$manual.annotation=='CD8')]<-paste0("CD8_",full.dn4$TIM3.class[which(full.dn4$manual.annotation=='CD8')])
+  ## TAM PDL1 
+ full.dn4$manual.annotation[which(full.dn4$manual.annotation=='Macrophage')]<-paste0("MAC_",full.dn4$PDL1.class[which(full.dn4$manual.annotation=='Macrophage')])
+ ## CCR4+ICOS+ TREG
+ full.dn4$manual.annotation[which(full.dn4$manual.annotation=='TREG')]<-paste0("TREG_",full.dn4$ICOS.CCR4.class[which(full.dn4$manual.annotation=='TREG')])
+
+  roiDist<-as.data.frame(matrix(350,nrow=nrow(full.dn4),ncol=length(unique(full.dn4$manual.annotation))))
+    colnames(roiDist)[1:length(unique(full.dn4$manual.annotation))]<-paste0("k_1_",unique(full.dn4$manual.annotation)) 
+ roiDist$uniqueLabel<-full.dn4$uniqueLabel
+  roiDist$ROIID<-full.dn4$ROIID
+  roiDist$cluster<-roiDist$marks<-'none'
+
+  for(roi in unique(full.dn4$ROIID)){
+  message(roi)
+  myroi<-subset(full.dn4,full.dn4$ROIID==roi)
+    p<-phenographToPPP(case=myroi,marksCase=factor(myroi$manual.annotation),shift=FALSE)
+   myroi2<-distanceCalculationROI(synth=p,zz=myroi,cluster.column="manual.annotation")
+    myroi3<-myroi2[,grepl("k_1_",colnames(myroi2))]
+  myroi3$uniqueLabel<-myroi2$uniqueLabel
+   myroi3$marks<-as.character(myroi2$marks)
+   myroi3$ROIID<-myroi2$ROIID
+  myroi3$cluster<-factor(as.character(myroi2$cluster))
+  roiDist[match(myroi3$uniqueLabel,roiDist$uniqueLabel),colnames(myroi3)]<-myroi3
+ }
+  roiDist$diagnosis<-full.dn4$COO[match(roiDist$ROIID,full.dn4$ROIID)]
+  dlbcl.hst<-roiDist[which(roiDist$marks=='Tumor'),]%>%group_by(ROIID,diagnosis)%>%summarise(CD4TIM3=mean(k_1_CD4_TIM3.high),
+	CD4TIM3low=mean(k_1_CD4_TIM3.low),
+	CD8TIM3=mean(k_1_CD8_TIM3.high),
+	CD8TIM3low=mean(k_1_CD8_TIM3.low),
+	MACPDL1=mean(k_1_MAC_PDL1.high),
+ 	MACPDL1low=mean(k_1_MAC_PDL1.low),
+ 	TREGHST=mean(k_1_TREG_ICOS.CCR4),
+  	TREG=mean(k_1_TREG_none))%>%data.frame
+ rownames(dlbcl.hst)<-dlbcl.hst$ROIID
+  dlbcl.hst<-dlbcl.hst[,-1]
+  dlbcl.hst$disease<-'DLBCL'
+ cc<-rbind(dlbcl.hst,chl.hst)
+
+ ## CCR4 TREG
+  ## not very different 
+   fit1<-lm(TREGHST~0+disease,cc)
+#  fit1<-lm(TREGHST~0+diagnosis,cc)
+  d<-cbind(confint(fit1),coef(fit1))
+ d<-data.frame(d,phenotype="ICOS+CCR4+TREG")
+
+ ## TIM3+CD4
+ ## TIM3+cd8 fit
+  fit<-lm(CD8TIM3~0+diagnosis,cc)
+  fit2<-lm(CD8TIM3~0+disease,cc[!rownames(cc)%in%names(which(influence(fit)$wt.res>40)),])
+ # fit2<-lm(CD8TIM3~0+diagnosis,cc)
+  a<-cbind(confint(fit2),coef(fit2))
+ a<-data.frame(a,phenotype="TIM3+CD8")
+ ## TIM3+CD4
+  fit3<-lm(CD4TIM3~0+disease,cc)
+# fit3<-lm(CD4TIM3~0+diagnosis,cc)
+   b<-cbind(confint(fit3),coef(fit3))
+   b<-data.frame(b,phenotype="TIM3+CD4")
+ ## PDL1+MAC
+  fit4<-lm(MACPDL1~0+disease,cc)
+#  fit4<-lm(MACPDL1~0+diagnosis,cc)  
+  c<-cbind(confint(fit4),coef(fit4))
+   c<-data.frame(c,phenotype="PDL1+MAC")
+  data<-rbind(a,b,c,d)
+ data$disease<-rep(c("DLBCL","HL"),4)
+  colnames(data)<-c("lower","upper","estimate","phenotype","disease")
+ # data$diagnosis<-rep(c("GCB","NGCB","LR","MC","NS"),nrow(data)/5)
+ # data<-data[which(data$diagnosis!="LR"),]
+# data$diagnosis<-factor(data$diagnosis,levels=c("GCB","NGCB","NS","MC"))
+ data$lower[which(data$lower<0)]<-0
+ data$phenotype<-gsub("TIM3","TIM-3",data$phenotype)
+  data$phenotype<-gsub("PDL1","PD-L1",data$phenotype)
+  ggplot(data,aes(x=phenotype,y=estimate,fill=disease))+geom_bar(stat='identity',position=position_dodge(),color='black')+geom_errorbar(aes(ymin=lower,ymax=upper),position=position_dodge())+scale_fill_manual(values=c("khaki2","plum2"))+theme_ipsum(base_family='Arial')+theme(axis.text.x=element_text(size=21,angle=45,colour='black',hjust=1),
+	axis.title.x=element_text(size=19),
+	axis.text.y=element_text(size=18,colour='black'),
+	legend.text=element_text(size=19),
+	legend.title=element_text(size=19),
+	axis.title.y=element_text(size=19))+ylab("Avg. nearest tumor distance")+scale_y_continuous(name='Avg. nearest tumor distance',limits=c(0,300))
+ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/figure4-final/CHL.diagnosis.nearestTumor.distance.diseaseLevel.png")
+
+
+ ## no TREG
+  ggplot(data[!grepl("TREG",data$phenotype),],aes(x=phenotype,y=estimate,fill=disease))+geom_bar(stat='identity',position=position_dodge(),color='black')+geom_errorbar(aes(ymin=lower,ymax=upper),position=position_dodge(0.9),width=0.2)+scale_fill_manual(values=c("khaki2","plum2"))+theme_ipsum(base_family='Arial')+theme(axis.text.x=element_text(size=21,angle=45,colour='black',hjust=1),
+	axis.title.x=element_text(size=19),
+	axis.text.y=element_text(size=18,colour='black'),
+	legend.text=element_text(size=19),
+	legend.title=element_text(size=19),
+	axis.title.y=element_text(size=19))+ylab("Avg. nearest tumor distance")+scale_y_continuous(name='Avg. nearest tumor distance',limits=c(0,72))
+ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/figure4-final/CHL.diagnosis.nearestTumor.distance.diseaseLevel.noTREG.png")
+
+
+
+
+```
+
+
+### Examine the Heatmap for Figure 4A
+Generate the heatmap in Figure 4A, and append on it the odds ratio for enrichment.
+```{r,eval=FALSE}
+
+
+  load("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure3-HD.vs.DLBCL/cleandat.limma.integrated.ComBat.limma.BatchCorrected.RData")
+
+    immune<-cleandat.limma[which(cleandat.limma$annotation!="BCell" & cleandat.limma$annotation!="HRS"),]
+
+ ##plot clustering heatmap.
+   immune$subannotation2<-as.character(immune$subannotation)
+   immune$subannotation2<-sapply( strsplit(immune$subannotation2,"_"),function(x) paste0(x[1],"_",letters[as.numeric(x[2])]))
+   immune$subannotation2<-factor(immune$subannotation2,levels=rownames(table(immune$subannotation2,immune$subannotation)))
+
+
+  ErikMeta=immune[,
+	c(c("CD206","CD3","CD45RA","CD45RO","CD4","CD68","CD8a","FOXP3","CXCR3","CCR4","HLADR","Ki67","PD1","PDL1","TIM3"),
+	#"ROIID",
+	"subannotation2")] %>% group_by(subannotation2) %>% 
+       dplyr::summarise_all(funs(median)) %>%data.frame  
+
+    integratedColors<-getIntegratedColors(immune)
+   plot_clustering_heatmap_wrapper(expr=immune[,c("CD206","CD3","CD45RA","CD45RO","CD4","CD68","CD8a","FOXP3","CXCR3","CCR4","HLADR","Ki67","PD1","PDL1","TIM3")], 
+  cell_clustering=immune[,"subannotation2"],
+  useMedians=FALSE,
+  useQuantiles=TRUE,
+  color_clusters=integratedColors)
+
+ savePlot(file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/figure4-final/TME.immune.HD.DLBCL.subannotation.singleCellLevel.png")
+
+
+  immune$annotated<-as.character(immune$subannotation2)
+  #PDL1+TIM3- MAC
+  immune$annotated[immune$annotated%in%c("Macrophage_h",
+	"Macrophage_c",	
+	"Macrophage_d",
+	"Macrophage_e")]<-"TIM3-PDL1+MAC"
+ #TIM3+PDL1+MAC
+  immune$annotated[immune$annotated%in%c("Macrophage_g",
+	"Macrophage_f",	
+	"Macrophage_i")]<-"TIM3+PDL1+MAC" 
+ #TIM3-PDL1-
+ immune$annotated[immune$annotated%in%c("Macrophage_a",
+	"Macrophage_b")]<-"TIM3-PDL1-MAC"
+
+ ##PD1+ HS TREG
+  immune$annotated[immune$annotated%in%c("TREG_a",
+	'TREG_f',
+	"TREG_d")]<-"PD1+Highlysuppressive TREG"
+
+ ##PD1- HS TREG
+
+ ##PD1- TREG
+ immune$annotated[immune$annotated%in%c("TREG_b",
+	"TREG_g",'TREG_c',
+	"TREG_h",
+	"TREG_e")]<-"PD1-TREG"
+ 
+ ## CD8 TIM3-PD1-
+ immune$annotated[immune$annotated%in%c("CD8_d")]<-"TIM3-PD1-CD8"
+ #CD8 TIM3+PD1+
+ immune$annotated[immune$annotated%in%c("CD8_b",
+	"CD8_c",
+	"CD8_e")]<-"TIM3+PD1+CD8"
+
+#CD8  TIM3+PD1-
+ immune$annotated[immune$annotated%in%c("CD8_f")]<-"TIM3+PD1-CD8"
+ ## TIM3-PD1+
+ immune$annotated[immune$annotated%in%c("CD8_a")]<-"TIM3-PD1+CD8"
+
+
+ ## CD4 TIM3+PD1+
+ immune$annotated[immune$annotated%in%c("CD4_a",
+	"CD4_h",
+	"CD4_e",
+	"CD4_c",
+	"CD4_b")]<-"TIM3+PD1+CD4"
+ ## CD4 TIM3+PD1-
+ immune$annotated[immune$annotated%in%c("CD4_a")]<-"TIM3+PD1-CD4"
+
+ ## CD4 TIM3-PD1+
+immune$annotated[immune$annotated%in%c("CD4_g",
+	"CD4_d",
+	"CD4_f")]<-"TIM3-PD1+ CD4"
+ 
+ ## save the immune data.
+  save(immune,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/figure4-final/immune.subset.cleandat.limma.RData")
+ # append to cleandat.limma
+  cleandat.limma$annotated.simple<-cleandat.limma$annotated<-cleandat.limma$subannotation2<-NA
+  cleandat.limma$annotated[match(immune$uniqueLabel,cleandat.limma$uniqueLabel)]<-immune$annotated
+cleandat.limma$annotated.simple[match(immune$uniqueLabel,cleandat.limma$uniqueLabel)]<-immune$annotated.simple
+ cleandat.limma$subannotation2[match(immune$uniqueLabel,cleandat.limma$uniqueLabel)]<-as.character(immune$subannotation2)
+ save(cleandat.limma,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure3-HD.vs.DLBCL/cleandat.limma.integrated.ComBat.limma.BatchCorrected.annotated.July29.RData")
+
+
+ markers<-c("CD206","CD3",
+	"CD45RA","CD45RO",
+	"CD4","CD68","CD8a",
+	"FOXP3","CXCR3","CCR4","HLADR","Ki67","PD1","PDL1",
+	"TIM3")
+   zz<-zScorePatientExpression(full.dn4=immune,
+	markers=which(colnames(immune)%in%markers),
+	ROIID.column=which(colnames(immune)=='ROIID'))
+  X<-zz[,c("CD206",
+	"CD3",
+	"CD45RA",
+	"CD45RO",
+	"CD4","CD68","CD8a","FOXP3","CXCR3","CCR4","HLADR","Ki67","PD1","PDL1","TIM3",
+	"annotated")] %>% group_by(annotated) %>% 
+       dplyr::summarise_all(funs(mean)) %>%data.frame  
+  rownames(X)<-X[,1]
+   library(ComplexHeatmap);library(dendextend)
+  library(pvclust)
+    rpt.pv<-pvclust(log(1+X[,-1]),nboot=100,method.hclust="average")
+  rpt.dend<-dendsort(hclust(dist(log(1+X[,c(-1)]))),isReverse=TRUE)
+ ## uses the full panel and the unsupervised community
+  rownames(X)<-gsub("TIM3","TIM-3",rownames(X))
+   rownames(X)<-gsub("PD1","PD-1",rownames(X))
+    rownames(X)<-gsub("PDL1","PD-L1",rownames(X))
+     rownames(X)<-gsub("Highlysuppressive TREG","highly suppressive TREG",rownames(X))
+  colnames(X)<-gsub("TIM3","TIM-3",colnames(X))
+   colnames(X)<-gsub("PD1","PD-1",colnames(X))
+   colnames(X)<-gsub("PDL1","PD-L1",colnames(X))
+    colnames(X)<-gsub("CD8a","CD8",colnames(X))
+
+  heats<-Heatmap(X[,c(-1)],
+                  cluster_rows=rpt.dend,
+                  cluster_columns=rpt.pv$hclust,
+		name="Measurement mean",
+	show_row_names=TRUE,
+		rect_gp = gpar(col = "white", lwd = 1))
+  heats
+
+  ## DLBCL>1
+    exp.Odds<-lapply(as.character(unique(immune$annotated.simple)),function(x) logisticRegressionClinicalOdds(pheno=x,full.dn4=immune,
+	phenotypeColumn="annotated.simple",
+	mycFeature="experiment.binary",
+	groupA="1"))
+
+ 
+  glmOdds<-t(sapply(exp.Odds,function(x) x[3:4]))%>%data.frame
+  glmOdds[,2]<-unlist(glmOdds[,2])
+  glmOdds[,1]<-unlist(glmOdds[,1])
+
+ rownames(glmOdds)<-sapply(exp.Odds,function(x) rownames(x))
+ rownames(glmOdds)<-c("TIM3+PD1+CD4",
+	"TIM-3+PD-1+CD8",
+	"TIM-3+PD-L1+MAC",
+	"TIM-3-PD-L1+MAC",
+	"TIM-3-PD-L1-MAC",
+	"PD-1+highly suppressive TREG",
+	"TIM-3-PD-1+CD8",
+	"PD-1-TREG",
+	"TIM-3+PD-1-CD8",
+	"TIM-3-PD-1+ CD4",
+	"TIM-3-PD-1-CD8")              
+ glmOdds<-glmOdds[match(rownames(X),rownames(glmOdds)),]
+ glmOdds$logOdds<-log2(glmOdds[,1])
+   ors<-glmOdds[,'logOdds']
+  or.p<-glmOdds[,2]
+ ors<-data.frame(OR=ors,p=or.p,row.names=rownames(X))
+  ORS<-data.frame(OR=rep(0,nrow(X)),row.names=rownames(X))
+   ORS[,1]<-ors[match(rownames(ORS),rownames(ors)),1]
+
+	ORS$p<-ors[match(rownames(ORS),rownames(ors)),"p"]
+
+
+   ors<-ORS
+ or.cols<-rep("bisque1",nrow(ors))
+  or.cols[which(ors[,1]>0 & ors[,"p"]<0.01)]<-"lightgoldenrod"
+  or.cols[which(ors[,1]<0 & ors[,"p"]<0.01 )]<-"plum2"
+      ORS<-cbind(ORS,glmOdds[rownames(ORS),])
+  colnames(ORS)<-c("OR","p","LR.Estimate","LR.p")
+
+
+   hans = rowAnnotation(
+   Cohort  = anno_points(ors[,1], 
+        gp = gpar(col = or.cols),
+	height = unit(3, "cm"),
+	width = unit(1.5, "cm"),	
+	size=unit(ifelse(or.cols=="bisque1",0.5,3.5)
+,"mm"),
+	axis_param=list(side="top",
+	labels_rot=45) ))
+
+ lgd.or = Legend(at = c("DLBCL enriched (p<0.01)","HL enriched (p<0.01)"),ncol=1,
+	 title = "Cohort log-odds Ratio",
+	type="points", 
+	title_position="topcenter",
+	size=unit(5,"mm"),
+	legend_gp = gpar(col =  c("khaki2",
+	"plum2")))
+
+  ht<-draw(hans+heats,annotation_legend_list=list(lgd.or))
+  decorate_annotation("Cohort",{
+	grid.lines(0, c(0.5,11.5), gp = gpar(lty = 2),
+        default.units = "native")
+	popViewport()
+	}) 
+
+  savePlot(file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/figure4-final/annotated.jointTME.heatmap.png")
+
+
+ 
+  immune$experiment.binary<-ifelse(immune$experiment=='DLBCL',1,0)
+ immune$annotated.simple<-as.character(immune$annotated) 
+  immune$annotated.simple<-gsub("\\-","Neg.",immune$annotated.simple)
+ immune$annotated.simple<-gsub("\\+","Pos.",immune$annotated.simple)
+ immune$annotated.simple<-gsub(" ","",immune$annotated.simple)
+
+
+
+ immune$case<-immune$ROIID
+ ## chi square Regression.
+  
+  
+
+```
+
+### update tables for figure 4
+Need to print the odds ratio, annotation label assignments, proportions, and expression
+```{r,eval=FALSE}
+ library(openxlsx)
+
+fig4<-loadWorkbook("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/figure4-final/FinalFigure4-table.xlsx")
+ 
+ ## GLMODDS
+    addWorksheet(fig4,"logOR.Cohort.labeled")
+	writeData(fig4,'logOR.Cohort.labeled',	
+	glmOdds,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=1)
+	
+	
+
+ ## label assignments
+  lab.assign<- table(immune$subannotation2,immune$annotated)%>%as.data.frame.matrix
+addWorksheet(fig4,"cluster.label.assign")
+	writeData(fig4,'cluster.label.assign',	
+	lab.assign,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=1)
+	
+
+
+
+ ### proportions.
+ addWorksheet(fig4,"clusterProportions")
+	writeData(fig4,'clusterProportions',	
+	cd4.prop,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=1)
+	
+
+
+
+
+ openxlsx::saveWorkbook(fig4,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/figure4-final/FinalFigure4-table2.xlsx",overwrite=TRUE)
+
+```
+
+

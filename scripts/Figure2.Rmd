@@ -49,7 +49,7 @@ function(full.dn4=NULL,markers=NULL,ROIID.column=NULL){
  ## this function performs Chi-square on the direct standardized counts per case
 ## direct standardization, standardizes the number of cells per case.
 ## direct standardization takes the given sub-community relative proportion, and then multiplies by the average number of cells across all cases (19,919). Each sub-community cluster has a different relative abundance.  By multiplying the cluster proportion by the standardized case cell average, it returns the expected number of cells in a sub-cluster assuming that all cases had the same number of cells.  It balances the expectation if all cases captured the same number of cells. so it scales the relative case proportions under the expectation that all cases had the same average cells. 
- chiHelperMeanScale<-function(pheno=NULL,full.dn4=NULL,phenotypeColumn="unsup.subcommunity"){
+ chiHelperMeanScale<-function(pheno=NULL,full.dn4=NULL,phenotypeColumn="unsup.subcommunity",conditionOnPrimary=FALSE){
  ### the features are average to scale the data.
 	##only works for HANS COO
 	##phenotype column is the column of phenoytpe levels.
@@ -63,8 +63,42 @@ function(full.dn4=NULL,markers=NULL,ROIID.column=NULL){
     ta2<-ta[,c(pheno,"COO")]
     x11<-round(mean(ta2[which(ta2$COO=="GCB"),1]))+1
     x12<-round(mean(ta2[which(ta2$COO!="GCB"),1]))+1
+	##conditioned on the same phenotype family.
+  if(conditionOnPrimary==TRUE){
     ta3<-ta[,grepl(primary,colnames(ta))]
+  }else{
+      ta3<-ta[,which(colnames(ta)!=pheno)]
+  }
     ta3<-ta3[,which(colnames(ta3)!=pheno)]
+    ta3$COO<-ta2$COO[match(rownames(ta3),rownames(ta2))]
+   ta3<-ta3%>%group_by(COO)%>%summarise_all(funs(mean))%>%data.frame()
+    x21<-round(mean(as.numeric(ta3[which(ta3$COO=="GCB"),-1])))+1
+    x22<-round(mean(as.numeric(ta3[which(ta3$COO=="NGCB"),-1])))+1
+    mat<-matrix(c(x11,x21,x12,x22),nrow=2,ncol=2)
+	rownames(mat)<-c(paste0(pheno,"+"),paste0(pheno,"-"))
+	colnames(mat)<-c("GCB","NGCB")
+ ### need OR with confidence intervals
+     require(epitools)
+     dd<-oddsratio(mat,rev="both")
+	return(dd)
+  }
+
+chiHelperMeanScaleLabeled<-function(pheno=NULL,full.dn4=NULL,phenotypeColumn="unsup.subcommunity"){
+ ### the features are average to scale the data.
+	##only works for HANS COO
+	##phenotype column is the column of phenoytpe levels.
+    message(pheno)
+    primary<-pheno
+    ta<-as.data.frame.matrix(table(full.dn4$case,full.dn4[,phenotypeColumn]))
+    ta<-ta/rowSums(ta)
+    ## direct standardization
+    ta<-round(mean(table(full.dn4$case))*ta)
+    ta$COO<-full.dn4$COO[match(rownames(ta),full.dn4$case)]
+    ta2<-ta[,c(pheno,"COO")]
+    x11<-round(mean(ta2[which(ta2$COO=="GCB"),1]))+1
+    x12<-round(mean(ta2[which(ta2$COO!="GCB"),1]))+1
+   
+    ta3<-ta[,which(colnames(ta)!=pheno)]
     ta3$COO<-ta2$COO[match(rownames(ta3),rownames(ta2))]
    ta3<-ta3%>%group_by(COO)%>%summarise_all(funs(mean))%>%data.frame()
     x21<-round(mean(as.numeric(ta3[which(ta3$COO=="GCB"),-1])))+1
@@ -96,6 +130,7 @@ function(full.dn4=NULL,markers=NULL,ROIID.column=NULL){
 	ci<-exp(confint(fit))
   dd<-exp(coef(glm(myForm,ta,family='binomial')))
    dd<-cbind(ci,dd)%>%data.frame
+  colnames(dd)<-c("lower.2.5%","upper.97.5%",paste0("OddsRatio.",groupA))
   pv<-summary(fit)%>%coef%>%data.frame
   dd$p<-pv[,4]
 	return(dd[pheno,])
@@ -134,7 +169,7 @@ color_clusters <- c("#DC050C", "#FB8072", "#1965B0", "#7BAFDE", "#882E72",
    tregs<-colorRampPalette(c("plum2","purple"),20)
    tumrs<-colorRampPalette(c("grey24","grey64"),20)
    phenoColors<-c(cd4s(14)[seq(1,14,2)],
-	cd8s(14)[seq(1,14,2)],"red",macs(12)[seq(1,12,2)],tregs(12)[seq(1,12,2)],tumrs(10))
+	cd8s(14)[seq(1,14,2)],"red",macs(12)[seq(1,12,2)],tregs(12)[seq(1,12,2)],tumrs(11))
 
  names(phenoColors)<-levels(factor(tsn$primary.phenotype))
    ##manual color change code.
@@ -247,51 +282,211 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 
 
 
-
- logisticRegressionClinicalOdds<-function(pheno=NULL,full.dn4=NULL,phenotypeColumn=NULL,mycFeature=NULL,groupA=1){
-    message(pheno)
-    primary<-sapply(strsplit(pheno,"_"),function(x) x[1])
-    ta<-as.data.frame.matrix(table(full.dn4$case,full.dn4[,phenotypeColumn]))
-    ta<-ta/rowSums(ta)
-    ## direct standardization
-    ta<-round(mean(table(full.dn4$case))*ta)
-	ta<-as.data.frame(scale(ta))
-    ta$feature<-full.dn4[match(rownames(ta),full.dn4$case),mycFeature]
-    ta$feature<-ifelse(ta$feature==groupA,1,0)
-  colnames(ta)[which(colnames(ta)=="feature")]<-mycFeature
-    myForm<-formula(paste0(mycFeature,"~",pheno))
-  dd<-exp(coef(glm(myForm,ta,family='binomial')))
-	return(dd)
-  } 
-
  ### individual mutations at the class level
+ ## ignores 'Tumor_11' cluster that cluster was not studied in phenotype analysis.
   patientMutationOddsRatio<-function(mutation=NULL){
    ### odds ratio of mutations
 	print(mutation)
- ta<-as.data.frame.matrix(table(full.dn4[which(full.dn4$WES.available==TRUE),mutation],full.dn4$COO[which(full.dn4$WES.available==TRUE)]))+200
+ ta<-as.data.frame.matrix(table(full.dn4[which(full.dn4$WES.available==TRUE & full.dn4$dimCD20.filtered=='NO'),mutation],full.dn4$COO[which(full.dn4$WES.available==TRUE& full.dn4$dimCD20.filtered=='NO')]))+400
   dd<-epitools::oddsratio(as.matrix(ta))
    return(dd$measure[2,])  
   }
 
-```
 
+ zScorePatientExpression<-function(full.dn4=NULL,markers=NULL,ROIID.column=NULL){
+  X3<-full.dn4[,c(markers,ROIID.column)]%>%group_by(ROIID)%>%summarise_all(funs(sd))%>%data.frame
+  X2<-full.dn4[,c(markers,ROIID.column)]%>%group_by(ROIID)%>%summarise_all(funs(mean))%>%data.frame
+   ###
+   z<-full.dn4
+  for(cl in unique(full.dn4$ROIID)){
+   for(mark in colnames(X2)[-1]){
+  z[which(z$ROIID==cl),which(colnames(z)==mark)]<- ( z[which(z$ROIID==cl),which(colnames(z)==mark)]-X2[which(X2$ROIID==cl),which(colnames(X2)==mark)])/(X3[which(X3$ROIID==cl),which(colnames(X3)==mark)])
+   }
+ }
+ return(z)
+ }
+
+
+ empiricalFitMutationCaseLevel<-function(full.dn4=NULL,design=NULL,toDrop=NULL,phenotypeCommunity=NULL){
+ ## fit the model at the case level, and not ROI level
+   patient<-as.data.frame.matrix(table(full.dn4$case,full.dn4[,phenotypeCommunity]))
+  ### patient/rowSums(patient) is the rate of phenotype_j per patient
+ ##  direct standardization multiples all the rates by a constant cohort average across all patients and all phenotypes.  this models equal number of phenotypes per patient.
+   ##modeled as a proportion 
+  y<-100*patient/rowSums(patient)
+ # y<-mean(table(full.dn4$ROIID))*y
+  #mean(rowMeans(patient))
+	y2<-as.data.frame(t(y))
+   y2$annotation<-sapply(strsplit(rownames(y2),"_"),function(x) x[1])
+   pat.pheno<-y2
+    pat.pheno<-pat.pheno[,which(colnames(pat.pheno)!="annotation")]
+    design<-design[match(colnames(pat.pheno),rownames(design)),]  
+   stopifnot(all( colnames(pat.pheno)==rownames(design)))
+    require(limma)
+  if(!is.null(toDrop)==TRUE){
+  pat.pheno<-pat.pheno[!rownames(pat.pheno)%in%toDrop,]
+  }
+  fit <- lmFit(pat.pheno,design)
+ #  Moderated t-statistic
+  fit <- eBayes(fit)
+ print( topTable(fit,coef=2))
+  return(fit)
+ }
+
+
+getMutationColors<-function(){
+
+ # mutCols<-c("thistle1",
+#	"darkorchid2",
+#	"purple3",
+#	"khaki",
+#	"white",
+#	"dodgerblue",
+#	"cyan2",
+#	"cadetblue4",
+#	"hotpink",
+#	"lightblue1",
+#	"seagreen2",
+#	 "black")
+  mutCols<-c(
+	#BCL2+	
+	"thistle1",
+	#BCL2+BCL6+EZH2"
+	"grey79",
+	#BCL2+EZH2+
+	"aquamarine4",
+	#BCL6+CD79b+
+	"purple3",
+	#CD79b
+	"khaki",
+	#EZH2
+	"black",
+	#MYD88
+	"hotpink",
+	##TP53"
+ 	"dodgerblue",
+	##TP53 CD79b
+	"cyan2",
+	#TP53+CD79B+MYD88
+	"darkorchid2",
+	#TP53+SGK+
+	"cadetblue2",
+	"lightblue1",
+	"seagreen2",
+	"none")
+
+
+  names(mutCols)<-c("BCL2+",
+	"BCL6+BCL2+EZH2+","BCL2+EZH2+","BCL6+CD79B+","CD79B+","EZH2+","MYD88.L265P+",
+	"TP53+","TP53+CD79B+","TP53+CD79B+MYD88.L265P+",
+	"TP53+SGK1+","NOTCH1+","NOTCH2+","none")
+ return(mutCols)
+}
+
+
+
+```
+### Library
+```{r, eval=FALSE}
+  require(ggplot2)
+ suppressPackageStartupMessages( require(ComplexHeatmap))
+ suppressPackageStartupMessages( require(knitr))
+ suppressPackageStartupMessages( require(kableExtra))
+suppressPackageStartupMessages( require(spatstat))
+ suppressPackageStartupMessages(library(dplyr))
+ suppressPackageStartupMessages(library(magrittr))
+ suppressPackageStartupMessages(library(survival))
+  suppressPackageStartupMessages(library(Hmisc))
+
+ library(data.table)
+library(dplyr)
+library(magrittr)
+library(dtplyr)
+library(ggplot2)
+library(parallel)
+library(neighbouRhood)
+library(gplots)
+library(RColorBrewer)
+ library(hrbrthemes)
+
+color_clusters <- c("#DC050C", "#FB8072", "#1965B0", "#7BAFDE", "#882E72", 
+  "#B17BA6", "#FF7F00", "#FDB462", "#E7298A", "#E78AC3", 
+  "#33A02C", "#B2DF8A", "#55A1B1", "#8DD3C7", "#A6761D", 
+  "#E6AB02", "#7570B3", "#BEAED4", "#666666", "#999999", 
+  "#aa8282", "#d4b7b7", "#8600bf", "#ba5ce3", "#808000", 
+  "#aeae5c", "#1e90ff", "#00bfff", "#56ff0d", "#ffff00")
+
+
+```
 
 ### Figure 2
  This shows the expression standardization and the association with mutation factors.
  We omitted subjects not determined for chemotherapy treatment. 
 
 ```{r, eval=FALSE}
-  library(ComplexHeatmap)
+
+ # load("~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.filtered.RData")
+
+ load(file="~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.appended.un.filtered.RData")
+
+
+
+  set.seed(1234)
+  table(full.dn4$phenograph_cluster_meta,full.dn4$cell.type.new)
+    
+
+  lineage_markers<-c( "Cell_BCL2",
+                       "Cell_BCL6",
+                       "Cell_CD20",
+                       "Cell_CD206",
+                       "Cell_CD3",
+                       "Cell_CD30",
+                       "Cell_CD31",
+                       "Cell_CD4",
+                       "Cell_CD45RA",
+                       "Cell_CD45RO",
+                       "Cell_CD68" ,
+                       "Cell_CD8",
+                       "Cell_EphrinB2",
+                       "Cell_FOXP3",
+                       "Cell_HLADR" )
+   induc<-c("Cell_C",
+            "Cell_CCR4",
+            "Cell_CD134",
+            "Cell_CXCR3",
+            "Cell_Granzym",
+            "Cell_ICOS",
+            "Cell_Ki67",
+            "Cell_Lag3",
+            "Cell_PD1",
+            "Cell_PDL1",
+            "Cell_PDL2",
+            "Cell_Tbet",
+            "Cell_Tim3",
+            "Cell_Vimentin",
+            "Cell_Vista",
+            "Cell_p",
+	"Area.norm",
+	"Eccentricity.norm",
+	"Solidity.norm",
+	"Perimeter.norm",
+	"Percent_Touching.norm",
+	"Number_Neighbors.norm")
+
+
+
+ 
  ## we include the full panel, and morphological features (and DNA).
   zz<- zScorePatientExpression(full.dn4=full.dn4,markers=c(1:31,104:111),ROIID.column=32)
   zz[,c(1:31,32,104:111)]%>%group_by(ROIID)%>%summarise_all(funs(sd))%>%data.frame
   zz[,c(1:31,32,104:111)]%>%group_by(ROIID)%>%summarise_all(funs(mean))%>%data.frame
+  ##note for the original expression profile we keep ND and all patients, but remove Tumor_11 dimCD20 from the analysis.  we omit Tumor_11 cluster. must keep ND subjects.
  ##omit ND from expression analysis.
-  zz<-zz[!zz$ROIID%in%unique(full.dn4$ROIID[which(full.dn4$treatment.status=="ND")]),]
-  nd.omit<-unique(full.dn4$ROIID[which(full.dn4$treatment.status=="ND")])
-  unique(zz$ROIID)%in%nd.omit
-  library(hrbrthemes)
-  
+  #zz<-zz[!zz$ROIID%in%unique(full.dn4$ROIID[which(full.dn4$treatment.status=="ND")]),]
+ # nd.omit<-unique(full.dn4$ROIID[which(full.dn4$treatment.status=="ND")])
+ # unique(zz$ROIID)%in%nd.omit
+ ## for phenotype analysis we remove dim CD20, (Tumor_11) cluster.
+   zz<-zz[which(zz$dimCD20.filtered=='NO'),]
 
  ## show the ROI standardization.
   z<-zz
@@ -349,8 +544,17 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 
  ### Heatmap the sub-clusters and the clinical associations.
 
-   X<-z[,c(1:31,177)]%>%group_by(unsup.subcommunity)%>%summarise_all(funs(mean))%>%data.frame
+   X<-z[,c(1:31,which(colnames(z)=='unsup.subcommunity'))]%>%group_by(unsup.subcommunity)%>%summarise_all(funs(mean))%>%data.frame
    colnames(X)<-gsub("Cell_","",colnames(X))
+  X$unsup.subcommunity<-droplevels(X$unsup.subcommunity)
+ colnames(X)[which(colnames(X)=='C')]<-'cMYC'
+ colnames(X)[which(colnames(X)=='p')]<-'pSTAT3'
+ colnames(X)[which(colnames(X)=='Tim3')]<-'TIM-3'
+ colnames(X)[which(colnames(X)=='Vista')]<-'VISTA'
+  colnames(X)[which(colnames(X)=='PDL1')]<-'PD-L1'
+   colnames(X)[which(colnames(X)=='PD1')]<-'PD-1'
+   colnames(X)[which(colnames(X)=='PDL2')]<-'PD-L2'
+  colnames(X)[which(colnames(X)=='Lag3')]<-'LAG-3'
 
   require(dendsort);require(pvclust)
   rpt.pv<-pvclust(log(1+X[,-1]),nboot=100,method.hclust="average")
@@ -413,11 +617,18 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 
   ### COO odds ratio
   ### assemble the OR for COO
-  pvals<-lapply(as.character(unique(full.dn4$unsup.subcommunity)[-3]),function(x) chiHelperMeanScale(pheno=x,full.dn4))
+  pvals<-lapply(as.character(unique(full.dn4$unsup.subcommunity)[-3]),function(x) chiHelperMeanScale(pheno=x,full.dn4,
+	phenotypeColumn="unsup.subcommunity",
+	conditionOnPrimary=FALSE))
   names(pvals)<-as.character(unique(full.dn4$unsup.subcommunity)[-3])
  
+##for studying phenotypes, we ignore Tumor_11
+  pvals<-pvals[which(names(pvals)!='Tumor_11')] 
+
  ### expected counts of COO in each cluster
   abund<-table(full.dn4$case,full.dn4$unsup.subcommunity)%>%as.data.frame.matrix
+ ## for studying the phenotypes, we are only interested in phenotypes correctly matching the component. ignore ambiguous phenotype Tumor_11 (dim CD20).
+  abund<-abund[,which(colnames(abund)!='Tumor_11')]
   abund<-abund/rowSums(abund)
   caseAvg<-table(full.dn4$case)%>%mean
   abund<-caseAvg*abund
@@ -428,12 +639,14 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
   
 
  
- glmOdds<-lapply(as.character(unique(full.dn4$unsup.subcommunity)[-3]),function(x) logisticRegressionClinicalOdds(pheno=x,full.dn4,phenotypeColumn="unsup.subcommunity",mycFeature="COO",groupA="GCB"))
-  #names(glmOdds)<-as.character(unique(full.dn4$unsup.subcommunity))
+ glmOdds<-lapply(as.character(unique(full.dn4$unsup.subcommunity)[which(unique(full.dn4$unsup.subcommunity)!='Endothelial' & unique(full.dn4$unsup.subcommunity)!='Tumor_11')]),function(x) logisticRegressionClinicalOdds(pheno=x,full.dn4[which(full.dn4$unsup.subcommunity!='Tumor_11'),],phenotypeColumn="unsup.subcommunity",
+	mycFeature="COO",
+	groupA="GCB"))
   names(glmOdds)<-sapply(glmOdds,function(x) rownames(x))
+
   glmOdds<-t(sapply(glmOdds,function(x) x[3:4]))%>%data.frame
   glmOdds[,2]<-unlist(glmOdds[,2])
-  glmOdds[,2]<-unlist(glmOdds[,2])
+  glmOdds[,1]<-unlist(glmOdds[,1])
 
  glmOdds<- rbind(glmOdds,c(1,1))%>%data.frame
  rownames(glmOdds)[37]<-"Endothelial"
@@ -454,8 +667,8 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 
    ors<-ORS
  or.cols<-rep("bisque1",nrow(ors))
-  or.cols[which(ors[,1]>1.38 & ors[,"p"]<0.01)]<-"red"
-  or.cols[which(ors[,1]<0.8 & ors[,"p"]<0.01 )]<-"blue"
+  or.cols[which(ors[,1]>1 & ors[,"p"]<0.01)]<-"blue"
+  or.cols[which(ors[,1]<0.9 & ors[,"p"]<0.01 )]<-"red"
       ORS<-cbind(ORS,glmOdds[rownames(ORS),])
   colnames(ORS)<-c("OR","p","LR.Estimate","LR.p")
 
@@ -465,6 +678,7 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
   library(hrbrthemes)
 
   ggplot(ORS,aes(x=OR,y=LR.Estimate))+geom_point()+xlab("Chi-square OR")+ylab("GLM Odds Ratio")+ theme_ipsum(base_family="Arial")+ggtitle("HANS GCB/Non-GCB Odds Risk")
+# ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure2/nonParam.GLM.association.estimate.png")
 
  
 
@@ -481,7 +695,7 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
   size+hans+heats+rowAnnLabeled
 
 
-   clinic<-mutationClinicalSheetAssembly(mutationsToGather=c("TP53","BCL2","BCL6","CD79B","SGK1","MYD88","MYC","NOTCH1","NOTCH2","EZH2"),full.dn4=full.dn4.5nn2)
+   clinic<-mutationClinicalSheetAssembly(mutationsToGather=c("TP53","BCL2","BCL6","CD79B","SGK1","MYD88","MYC","NOTCH1","NOTCH2","EZH2"),full.dn4=full.dn4)
 	
  ## add the double hit c-MYC information.
   myc<-data.frame(ROIID=clinic$Run.ID,
@@ -508,11 +722,15 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
  ## add in double expressor.
      full.dn4$double.expressor<-myc$double.expressor[match(full.dn4$ROIID,myc$ROIID)]
 
-  mycvals<-lapply(as.character(unique(full.dn4$unsup.subcommunity)[-3]),
-	function(x) chiHelperStatus(pheno=x,full.dn4=full.dn4,phenotypeColumn="unsup.subcommunity",mycFeature="double.expressor"))
+  mycvals<-lapply(as.character(as.character(unique(full.dn4$unsup.subcommunity)[which(unique(full.dn4$unsup.subcommunity)!='Endothelial' & unique(full.dn4$unsup.subcommunity)!='Tumor_11')])),
+	function(x) chiHelperStatus(pheno=x,full.dn4[which(full.dn4$unsup.subcommunity!='Tumor_11'),],
+	phenotypeColumn="unsup.subcommunity",mycFeature="double.expressor"))
 
  ### glmOdds
-  dEx.Odds<-lapply(as.character(unique(full.dn4$unsup.subcommunity)[-3]),function(x) logisticRegressionClinicalOdds(pheno=x,full.dn4,phenotypeColumn="unsup.subcommunity",mycFeature="double.expressor",groupA=1))
+  dEx.Odds<-lapply(as.character(as.character(unique(full.dn4$unsup.subcommunity)[which(unique(full.dn4$unsup.subcommunity)!='Endothelial' & unique(full.dn4$unsup.subcommunity)!='Tumor_11')])),function(x) logisticRegressionClinicalOdds(pheno=x,full.dn4[which(full.dn4$unsup.subcommunity!='Tumor_11'),],
+	phenotypeColumn="unsup.subcommunity",
+	mycFeature="double.expressor",
+	groupA=1))
 
   names(dEx.Odds)<-sapply(dEx.Odds,function(x) rownames(x))
  
@@ -525,7 +743,8 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 
 
  
-  names(mycvals)<-as.character(unique(full.dn4$unsup.subcommunity)[-3])
+  names(mycvals)<-as.character(unique(full.dn4$unsup.subcommunity)[which(unique(full.dn4$unsup.subcommunity)!='Endothelial' & unique(full.dn4$unsup.subcommunity)!='Tumor_11')])
+
   ### generates a data frame
   oddsRatioDataFrame<-function(pvals=NULL,X=NULL){
  ors<-unlist(sapply(seq(1,length(pvals)),function(x) pvals[[x]]$measure[2,1]))
@@ -544,17 +763,18 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 
 
   mycData<-oddsRatioDataFrame(pvals=mycvals,X=X)
- mycData$glm.OR<-dEx.Odds[rownames(mycData),'dd']
+ mycData$glm.OR<-dEx.Odds[rownames(mycData),1]
 
 
   ## plotting the odds ratio compared to logisitic 
   mycData$glm.OR<-ifelse(mycData$glm.OR>10,5,mycData$glm.OR)
   mycData[which(rownames(mycData)=="Endothelial"),]<-1
 
+ ## tumor_5 and tumor_6 were enriched in cmyc using a linear model.
  pvalue_col_fun = colorRamp2(c(0, 2, 3), c("grey95", "grey95", "grey95")) 
  mycData$symbol=NA
-  mycData$symbol[which(mycData$glm.OR>2 & mycData$p<0.001)]<-8
-  reArrange<-HeatmapAnnotation("d.expressor"=anno_simple(rep(0,nrow(mycData)),
+  mycData$symbol[which(rownames(mycData)%in%c("Tumor_5","Tumor_6"))]<-8
+  reArrange<-HeatmapAnnotation("double expressor"=anno_simple(rep(0,nrow(mycData)),
 	col=pvalue_col_fun,
 	pch=mycData$symbol,
 	pt_size=unit(2,"mm"),
@@ -583,9 +803,9 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
   ##TP53
  full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==1 & full.dn4$BCL2==0 & full.dn4$SGK1==0& full.dn4$CD79B==0 &full.dn4$MYD88.L265P==0 & full.dn4$EZH2==0)]<-"TP53+"
  ## TP53+SGK1+
- full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==1 & full.dn4$BCL2==0 & full.dn4$SGK1==1& full.dn4$CD79B==0 &full.dn4$MYD88.L265P==0 & full.dn4$EZH2==0)]<-"TP53+SGK1+"
+ full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==1 & full.dn4$BCL2==0 & full.dn4$SGK1==1& full.dn4$CD79B==0 &full.dn4$MYD88.L265P==0 & full.dn4$EZH2==0 )]<-"TP53+SGK1+"
  ## TP53+CD79b+
-  full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==1 & full.dn4$BCL2==0 & full.dn4$SGK1==0& full.dn4$CD79B==1 &full.dn4$MYD88.L265P==0 & full.dn4$EZH2==0)]<-"TP53+CD79b+"
+  full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==1 & full.dn4$BCL2==0 & full.dn4$SGK1==0& full.dn4$CD79B==1 &full.dn4$MYD88.L265P==0 & full.dn4$EZH2==0 )]<-"TP53+CD79b+"
 #TP53+CD79b+MYD88+
   full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==1 & full.dn4$BCL2==0 & full.dn4$SGK1==0& full.dn4$CD79B==1 &full.dn4$MYD88.L265P==1 & full.dn4$EZH2==0)]<-"TP53+CD79b+MYD88.L265P+"
  
@@ -614,8 +834,6 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
  
   ## BCL2+CD79B+
  full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==0 & full.dn4$BCL2==1 & full.dn4$SGK1==0& full.dn4$CD79B==1&full.dn4$MYD88.L265P==0& full.dn4$EZH2==0)]<-"BCL2+CD79B+"
-
-
  
  full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==0 & full.dn4$TP53==0 & full.dn4$BCL2==0 & full.dn4$SGK1==0& full.dn4$CD79B==0 full.dn4$MYD88.L265P==0 & full.dn4$EZH2==0 |full.dn4$WES.available==FALSE & full.dn4$BCL6==0 & full.dn4$TP53==0 & full.dn4$BCL2==0 & full.dn4$SGK1==0& full.dn4$CD79B==0&full.dn4$MYD88.L265P==0 & full.dn4$EZH2==0)]<-"none"
 
@@ -627,14 +845,13 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 
  ##BCL2+BCL6+EZH2+
  full.dn4$mutation[which(full.dn4$WES.available==TRUE & full.dn4$BCL6==1 & full.dn4$TP53==0 & full.dn4$BCL2==1 & full.dn4$SGK1==0& full.dn4$CD79B==0&full.dn4$MYD88.L265P==0& full.dn4$EZH2==1)]<-"BCL2+BCL6+EZH2+"
- 
 
  
-
  
   
- mut.perc<- table(full.dn4[,"unsup.subcommunity"],
-	full.dn4[,"mutation"])%>%as.data.frame.matrix()
+ mut.perc<- table(full.dn4[which(full.dn4$unsup.subcommunity!='Tumor_11'),"unsup.subcommunity"],
+	full.dn4[which(full.dn4$unsup.subcommunity!='Tumor_11'),"mutation"])%>%as.data.frame.matrix()
+  mut.perc<-mut.perc[which(rownames(mut.perc)!='Tumor_11'),]
 
   mut.perc<-100*mut.perc/(1+rowSums(mut.perc))
  ##adding MYD88.L265P
@@ -678,7 +895,7 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 
  ipi.perc<- table(full.dn4$unsup.subcommunity,full.dn4$IPI.category)%>%as.data.frame.matrix()
   ipi.perc<-100*ipi.perc/(1+rowSums(ipi.perc))
- write.csv(ipi.perc,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure1-lowCD20-revision/comprehensive-cohort-heatmap-Figure1-mutations/IPI.scores.csv")
+ #write.csv(ipi.perc,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure1-lowCD20-revision/comprehensive-cohort-heatmap-Figure1-mutations/IPI.scores.csv")
 
    require(circlize)
     col_fun<-colorRamp2(c(5,40,75),c("blue","white","red"))
@@ -724,8 +941,8 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
 	type="points", 
 	title_position="topcenter",
 	size=unit(5,"mm"),
-	legend_gp = gpar(col =  c("blue",
-	"red")))
+	legend_gp = gpar(col =  c("red",
+	"blue")))
 
  ## MYC.Rearrange and MYC Gain legend.
  lgd.myc = Legend(at = "(OR>2,p<0.001)",ncol=1,
@@ -741,7 +958,7 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
         default.units = "native")
 	popViewport()
 	}) 
-  #savePlot(file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure1-lowCD20-revision/comprehensive-cohort-heatmap-Figure1-mutations/Figure1.subCommunity.clinical.mutations.stackedBarplot.myc.png")
+  #savePlot(file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure1-lowCD20-revision/comprehensive-cohort-heatmap-Figure1-mutations/Figure1.subCommunity.clinical.mutations.stackedBarplot.myc2.png")
 
  
  ht2<-draw(size+hans+ipis+reArrange+heats+muts+rowAnnLabeled,annotation_legend_list=list(lgd,lgd.or,lgd.myc))
@@ -750,9 +967,16 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
         default.units = "native")
 	popViewport()
 	}) 
-  # savePlot(file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure1-lowCD20-revision/comprehensive-cohort-heatmap-Figure1-mutations/Figure2.subCommunity.clinical.mutations.stackedBarplot.labeled.doubleExpressor.png")
+  savePlot(file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure2/figure2.subCommunity.clinical.mutation.protein.DE.png")
 
-
+ ## write out the revised OR and GLM data to file.
+  fig2<-openxlsx::loadWorkbook("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure2/Figure2.tableData.xlsx")
+    addWorksheet(fig2,"GCB.OR.HANS.revised")
+	writeData(fig2,'GCB.OR.HANS.revised',	
+	ORS,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=1)
+	openxlsx::saveWorkbook(fig2,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure2/Figure2.tableData2.xlsx",overwrite=TRUE)
+	
 
  mut.or<-sapply(c("TP53",
 	"CD79B",
@@ -777,7 +1001,7 @@ mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6"
  ## confidence intervals. (univariate).
  print(mut.or2)
 
-  ggplot(mut.or2,aes(x=mutation,y=log(1+estimate)+0.1))+geom_point()+geom_errorbar(aes(ymin=log(1+lower)+0.1,ymax=log(1+upper)+0.1),width=0.2,size=0.7)+theme_ipsum(base_family="Arial",base_size=14)+theme(axis.text.x = element_text(angle = 45, hjust = 1))+geom_hline(yintercept=1,col="red",linetype="dashed")+ylab("Log-Odds for Non-GCB")+xlab("Mutation")
+  ggplot(mut.or2,aes(x=mutation,y=log(estimate)+0.1))+geom_point()+geom_errorbar(aes(ymin=log(lower)+0.1,ymax=log(upper)+0.1),width=0.2,size=0.7)+theme_ipsum(base_family="Arial",base_size=14)+theme(axis.text.x = element_text(angle = 45, hjust = 1))+geom_hline(yintercept=1,col="red",linetype="dashed")+ylab("Log-Odds for Non-GCB")+xlab("Mutation")
   # ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-mutation-analysis/Specific.mutation.nonGCB.odds.ratio.onlyWES.available.png")
 
 
@@ -800,11 +1024,11 @@ clinic$X9p24.gain.status[which(is.na(clinic$X9p24.gain.status))]<-0
 	X9p24=ifelse( clinic$X9p24.gain.status!=0,1,0),
 	HANS=clinic[,"Cell.of.origin..HANS."])
 	
-
+  
    ##case level model summary.
    mutation<-mutation[!duplicated(mutation$case),]
   tp53.design<-model.matrix(~TP53+SGK1+CD79B+BCL6+BCL2+MYD88.L265P+HANS+NOTCH1+NOTCH2+EZH2+X9p24,mutation)
-  #rownames(tp53.design)<-mutation$ROIID
+
   rownames(tp53.design)<-mutation$case
   jointDesign<-as.data.frame(tp53.design)
       jointDesign[,"TP53.CD79B"]<-jointDesign[,"TP53"]*jointDesign[,"CD79B"]
@@ -813,12 +1037,15 @@ clinic$X9p24.gain.status[which(is.na(clinic$X9p24.gain.status))]<-0
  jointDesign<-jointDesign[,which(colnames(jointDesign)!="BCL6")]
  
 
-  mutFit<-empiricalFitMutationCaseLevel(full.dn4=full.dn4,design=jointDesign,
+
+ ##testing the label. 
+ mutFit<-empiricalFitMutationCaseLevel(full.dn4=full.dn4[which(full.dn4$unsup.subcommunity!='Tumor_11'),],design=jointDesign,
 toDrop=c("TREG_5",
 	"TREG_4","TREG_1","TREG_3","TREG_2","TREG_6","Endothelial"),
 	phenotypeCommunity="unsup.subcommunity")
- 
 
+  
+### This is the cluster level phenotype.
 ## case level.
 ## bubble plot 
  ## MYD88
@@ -836,6 +1063,7 @@ toDrop=c("TREG_5",
 	"EZH2+",
 	rep("BCL6+BCL2+EZH2+",1))
 	mutData$phenotype=rownames(mutData)
+ mutData$q.val<-round(mutData$adj.P.Val,3)
 	
   require(hrbrthemes)
  phenoColors<-getPhenoColors(full.dn4)
@@ -843,15 +1071,777 @@ toDrop=c("TREG_5",
    mutData$mutation<-factor(mutData$mutation)
    myCol<-phenoColors[levels(mutData$phenotype)]
     myCol2<-getMutationColors()[levels(mutData$mutation)]
-  ggplot(mutData,aes(x=logFC,y=phenotype,size=-log(adj.P.Val),fill=mutation))+
+ mutData$q.val<-round(mutData$adj.P.Val,3)
+  mutData$phenotype<-factor(mutData$phenotype,levels=mutData$phenotype[order(mutData$adj.P.Val,decreasing=TRUE)])
+
+ library(ggrepel)
+ pp<- ggplot(mutData,aes(x=logFC,y=phenotype,size=3,fill=mutation,label=q.val))+
 	geom_point(alpha=0.95,shape=21,color='black')+
 	scale_fill_manual(values=myCol2)+
 	theme_ipsum(base_family="Arial")+
-	theme(axis.text.x=element_text(size=15),axis.text.y=element_text(size=15))+
-	geom_vline(xintercept=0,col='red',linetype="dashed")+xlab("logFC (%)")
- ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-mutation-analysis/final-figure-mutational-specific-mutations/Significant.mutation.subCommunity.caseLevel.png")
- 
+	theme(axis.text.x=element_text(size=15),axis.text.y=element_text(size=15),
+	axis.title.x=element_text(size=14),
+	axis.title.y=element_text(size=14))+
+	geom_vline(xintercept=0,col='red',linetype="dashed")+xlab("logFC (%)")+geom_text_repel(box.padding=0.75)
 
+ ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure2/Significant.mutation.subCommunity.caseLevel.png")
+
+
+```
+
+### Mutation analysis using the annotated label
+```{r, eval=FALSE}
+
+
+ ##omit the tumor phenotypes study only the TME %
+ mutFit.label<-empiricalFitMutationCaseLevel(full.dn4=full.dn4[which(full.dn4$unsup.subcommunity!='Tumor_11'),],design=jointDesign,
+toDrop=c("Endothelial",
+	'Ki67_BCelltumor',
+	'BCelltumor',
+	'none',
+	'Ki67Neg_Tumor',
+	"Ki67_CCR4_BCelltumor",
+	'Ki67moderateBCelltumor',
+	'cMYC_Ki67_BCelltumor'),
+	phenotypeCommunity="annotated.umap.simple")
+ ## use the annotated labels for the bubble plot.
+ ##NOTCH1+
+ mutData<-data.frame(topTable(mutFit.label,coef=8)[1:3,])
+ ## EZH2
+  mutData<-rbind(mutData,topTable(mutFit.label,coef=10)[1,])
+  #BCL6+CD79b+
+   mutData<-rbind(mutData,topTable(mutFit.label,coef=13)[1,])
+ mutData$mutation<-c(rep("NOTCH1+",3),
+	"EZH2+",	
+	"BCL6+CD79b+")
+	mutData$phenotype=rownames(mutData)
+ mutData$q.val<-round(mutData$adj.P.Val,3) 
+ 
+ mutData$label<-full.dn4$annotated.umap[match(mutData$phenotype,full.dn4$annotated.umap.simple)]
+ mutData$unsup<-c("CD4_1","CD8_2","CD4_3","TREG_1","CD4_4")
+ mutData$unsup<-factor(mutData$unsup)
+  require(hrbrthemes)
+  phenoColors<-getPhenoColors(full.dn4)
+  mutData$phenotype<-factor(mutData$phenotype)
+   mutData$mutation<-factor(mutData$mutation)
+   myCol<-phenoColors[levels(mutData$unsup)]
+    myCol2<-getMutationColors()
+     names(myCol2)[which(names(myCol2)=="BCL6+CD79B+")]<-"BCL6+CD79b+"
+
+     myCol2<-myCol2[levels(mutData$mutation)]
+ mutData$q.val<-round(mutData$adj.P.Val,3)
+  mutData$phenotype<-factor(mutData$phenotype,levels=unique(mutData$phenotype[order(mutData$logFC,decreasing=TRUE)]))
+ mutData$relabel<-as.character(mutData$label)
+  mutData$relabel<-c("CD45RA+ exhausted CD4(1)","Exhausted CD8(2,5,6)","CD45RA+TIM3+ CD4(3)","TREG(1,3,4)", "Memory CD4(3,4,7)")
+  mutData$relabel<-factor(mutData$relabel,levels=unique(mutData$relabel))
+  ###omit CD45RA+TIM3+CD4 from this highlight figure because we do not discuss it in the results
+ ## it is also a subset of CD4_3 which we don't describe in the results. too detailed.  omit
+ mutData<-mutData[which(rownames(mutData)!="CD45RA_TIM3_CD4"),]
+ library(ggrepel)
+ pp<- ggplot(mutData,aes(x=logFC,y=relabel,size=6,fill=mutation,label=q.val))+
+	geom_point(alpha=0.95,shape=21,color='black')+
+	scale_fill_manual(values=myCol2)+
+	theme_ipsum(base_family="Arial")+
+	theme(axis.text.x=element_text(size=17,color='black'),
+	axis.text.y=element_text(size=17,color='black'),
+	axis.title.x=element_text(size=16),
+	legend.text=element_text(size=14),
+	legend.key = element_rect(fill = 'white', colour = "black"),
+	axis.title.y=element_text(size=16))+
+	geom_vline(xintercept=0,col='red',linetype="dashed")+xlab("logFC (%)")+geom_text_repel(box.padding=0.75,size=7)+ylab("Annotated phenotype")+scale_x_continuous(limits=c(-10,25))
+pp
+ ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure2/Significant.mutation.subCommunity.caseLevel.TME.labeled.png")
+
+ ## save the annotated label phenotype into excel.
+  library(openxlsx)
+ 	  fig2<-openxlsx::loadWorkbook("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure2/Figure2.tableData.xlsx")
+	openxlsx::addWorksheet(fig2,"mutationFit.labeled")
+	openxlsx::writeData(fig2,'mutationFit.labeled',
+	mutData,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=1)
+	openxlsx::saveWorkbook(fig2,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure2/Figure2.tableData2.xlsx",overwrite=TRUE)
+		
+
+```
+
+
+### ANOVA model
+
+
+```{r, eval=FALSE}
+
+   zz<- zScorePatientExpression(full.dn4=full.dn4,markers=c(1:31,104:111),ROIID.column=32)
+ ### calculate any expression differences across sub-clusters and treatment response.
+ 
+  ## ignore Tumor_11 cluster
+   zz<-zz[which(zz$unsup.subcommunity!="Tumor_11"),]
+
+ 
+  subExpr<-zz%>%group_by(ROIID,unsup.subcommunity)%>%summarise(CXCR3=mean(Cell_CXCR3),
+	CCR4=mean(Cell_CCR4),
+	BCL2=mean(Cell_BCL2),
+	BCL6=mean(Cell_BCL6),
+	CD30=mean(Cell_CD30),
+	Ki67=mean(Cell_Ki67),
+	cMyc=mean(Cell_C),
+	PDL1=mean(Cell_PDL1),
+	TIM3=mean(Cell_Tim3),
+	LAG3=mean(Cell_Lag3),
+	PD1=mean(Cell_PD1),
+	ICOS=mean(Cell_ICOS),
+	Vista=mean(Cell_Vista),
+	CD45RO=mean(Cell_CD45RO),
+	CD45RA=mean(Cell_CD45RA),
+	CD206=mean(Cell_CD206),
+	NND.tumor=mean(NND.Tumor),
+	HLADR=mean(Cell_HLADR),
+	cMYC=mean(Cell_C),
+	CD68=mean(Cell_CD68),
+	CD206=mean(Cell_CD206))%>%data.frame
+
+  subExpr$unsup.subcommunity<-droplevels(subExpr$unsup.subcommunity)
+
+ 
+	##split the NND by biological distances.	
+	subExpr$NND.status<-">25"
+	subExpr$NND.status[which(subExpr$NND.tumor<=10)]<-"10"
+	subExpr$NND.status[which(subExpr$NND.tumor>10 & subExpr$NND.tumor<=25)]<-"25"
+
+	## add response clinical variables.
+	subExpr$case<-full.dn4$case[match(subExpr$ROIID,full.dn4$ROIID)]
+	subExpr$response<-full.dn4$response[match(subExpr$case,full.dn4$case)]
+	subExpr$treatment<-full.dn4$treatment.status[match(subExpr$case,full.dn4$case)]
+	subExpr$COO<-full.dn4$COO[match(subExpr$case,full.dn4$case)]
+	##because we are comparing response drop LTF and ND
+	#subExpr<-subExpr[which(subExpr$response!='LTF'),]
+	
+	subExpr$response<-droplevels(subExpr$response)
+
+
+  
+	### model the effect estimates for global trends.
+	#lag3.eff<-model.tables(lag3,'effects')
+	#cd45ro.eff<-model.tables(cd45ro,'effects')
+	#pd1.eff<-model.tables(pd1,'effects')
+	#ki67.eff<-model.tables(ki67,'effects')
+	#tim3.eff<-model.tables(tim3,'effects')
+	#dr.eff<-model.tables(hladr,'effects')
+
+	## global model. more comprehensive.
+	####	total levels is 37
+	alpha_noint <- rbind(
+	grandMean=rep(1,37)/37,
+	cd41.vs.mean=ifelse(subExpr[,2]%>%levels=="CD4_1",36,-1)/37,
+	cd42.vs.mean=ifelse(subExpr[,2]%>%levels=="CD4_2",36,-1)/37,
+	cd43.vs.mean=ifelse(subExpr[,2]%>%levels=="CD4_3",36,-1)/37,
+	cd44.vs.mean=ifelse(subExpr[,2]%>%levels=="CD4_4",36,-1)/37,
+	cd45.vs.mean=ifelse(subExpr[,2]%>%levels=="CD4_5",36,-1)/37,
+	cd46.vs.mean=ifelse(subExpr[,2]%>%levels=="CD4_6",36,-1)/37,
+	cd47.vs.mean=ifelse(subExpr[,2]%>%levels=="CD4_7",36,-1)/37,	
+
+	cd81.vs.mean=ifelse(subExpr[,2]%>%levels=="CD8_1",36,-1)/37,
+	cd82.vs.mean=ifelse(subExpr[,2]%>%levels=="CD8_2",36,-1)/37,
+	cd83.vs.mean=ifelse(subExpr[,2]%>%levels=="CD8_3",36,-1)/37,
+	cd84.vs.mean=ifelse(subExpr[,2]%>%levels=="CD8_4",36,-1)/37,
+	cd85.vs.mean=ifelse(subExpr[,2]%>%levels=="CD8_5",36,-1)/37,
+	cd86.vs.mean=ifelse(subExpr[,2]%>%levels=="CD8_6",36,-1)/37,
+	cd87.vs.mean=ifelse(subExpr[,2]%>%levels=="CD8_7",36,-1)/37,
+	## 
+	t1.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_1",36,-1)/37,
+	t2.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_2",36,-1)/37,
+	t3.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_3",36,-1)/37,
+	t4.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_4",36,-1)/37,
+	t5.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_5",36,-1)/37,
+	t6.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_6",36,-1)/37,
+	t7.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_7",36,-1)/37,
+	t8.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_8",36,-1)/37,
+	t9.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_9",36,-1)/37,
+	t10.vs.mean=ifelse(subExpr[,2]%>%levels=="Tumor_10",36,-1)/37,
+
+	treg1.vs.mean=ifelse(subExpr[,2]%>%levels=="TREG_1",36,-1)/37,
+	treg2.vs.mean=ifelse(subExpr[,2]%>%levels=="TREG_2",36,-1)/37,
+	treg3.vs.mean=ifelse(subExpr[,2]%>%levels=="TREG_3",36,-1)/37,
+	treg4.vs.mean=ifelse(subExpr[,2]%>%levels=="TREG_4",36,-1)/37,
+	treg5.vs.mean=ifelse(subExpr[,2]%>%levels=="TREG_5",36,-1)/37,
+	treg6.vs.mean=ifelse(subExpr[,2]%>%levels=="TREG_6",36,-1)/37,
+
+	mac1.vs.mean=ifelse(subExpr[,2]%>%levels=="Macrophage_1",36,-1)/37,
+	mac2.vs.mean=ifelse(subExpr[,2]%>%levels=="Macrophage_2",36,-1)/37,
+	mac3.vs.mean=ifelse(subExpr[,2]%>%levels=="Macrophage_3",36,-1)/37,
+	mac4.vs.mean=ifelse(subExpr[,2]%>%levels=="Macrophage_4",36,-1)/37,
+	mac5.vs.mean=ifelse(subExpr[,2]%>%levels=="Macrophage_5",36,-1)/37,
+	mac6.vs.mean=ifelse(subExpr[,2]%>%levels=="Macrophage_6",36,-1)/37
+
+	   )
+
+   library(multcomp);library(lme4)
+	tim3.global <- lmer(TIM3 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	lag3.global <- lmer(LAG3 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	pd1.global <- lmer(PD1 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	cxcr3.global <- lmer(CXCR3 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	ccr4.global <- lmer(CCR4 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	hladr.global <- lmer(HLADR ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	pdl1.global <- lmer(PDL1 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	icos.global <- lmer(ICOS ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	ki67.global <- lmer(Ki67 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	vista.global <- lmer(Vista ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	bcl6.global <- lmer(BCL6 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	bcl2.global <- lmer(BCL2 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	cd206.global <- lmer(CD206 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	cd45ro.global <- lmer(CD45RO ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	cd45ra.global <- lmer(CD45RA ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+ cd68.global <- lmer(CD68 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+ cmyc.global <- lmer(cMYC ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+
+	##TIM3
+  tim3.global <- glht(tim3.global, linfct=alpha_noint)
+  tim3.global.ci<-confint(tim3.global, calpha=univariate_calpha())
+  tim3.global.ci<- tim3.global.ci$confint%>%data.frame
+	tim3.global.ci$marker<-'TIM3'
+	 xx<-tim3.global%>%summary
+  tim3.global.ci$pvalues<-xx$test$pvalues
+	##ki67
+	 ki.global <- glht(ki67.global, linfct=alpha_noint)
+ 	 ki.global.ci<-confint(ki.global, calpha=univariate_calpha())
+  	ki.global.ci<- ki.global.ci$confint%>%data.frame
+	ki.global.ci$marker<-'Ki67'
+ 	  xx<-ki.global%>%summary
+	ki.global.ci$pvalues<-xx$test$pvalues
+
+	# PD1
+	 pd1.global <- glht(pd1.global, linfct=alpha_noint)
+ 	 pd1.global.ci<-confint(pd1.global, calpha=univariate_calpha())
+  	pd1.global.ci<- pd1.global.ci$confint%>%data.frame
+	pd1.global.ci$marker<-'PD1'
+ 	 xx<-pd1.global%>%summary
+	pd1.global.ci$pvalues<-xx$test$pvalues
+
+	##Lag3
+	 lag3.global <- glht(lag3.global, linfct=alpha_noint)
+ 	 lag3.global.ci<-confint(lag3.global, calpha=univariate_calpha())
+  	lag3.global.ci<- lag3.global.ci$confint%>%data.frame
+	lag3.global.ci$marker<-'LAG3'
+ 	 xx<-lag3.global%>%summary
+	lag3.global.ci$pvalues<-xx$test$pvalues
+
+	## CXCR3
+	 cxcr3.global <- glht(cxcr3.global, linfct=alpha_noint)
+ 	 cxcr3.global.ci<-confint(cxcr3.global, calpha=univariate_calpha())
+  	cxcr3.global.ci<- cxcr3.global.ci$confint%>%data.frame
+	cxcr3.global.ci$marker<-'CXCR3'
+	 xx<-cxcr3.global%>%summary
+	cxcr3.global.ci$pvalues<-xx$test$pvalues
+
+	## CCR4
+	 ccr4.global <- glht(ccr4.global, linfct=alpha_noint)
+ 	 ccr4.global.ci<-confint(ccr4.global, calpha=univariate_calpha())
+  	ccr4.global.ci<- ccr4.global.ci$confint%>%data.frame
+	ccr4.global.ci$marker<-'CCR4'
+  	xx<-ccr4.global%>%summary
+	ccr4.global.ci$pvalues<-xx$test$pvalues
+	## PDL1
+	 pdl1.global <- glht(pdl1.global, linfct=alpha_noint)
+ 	 pdl1.global.ci<-confint(pdl1.global, calpha=univariate_calpha())
+  	pdl1.global.ci<- pdl1.global.ci$confint%>%data.frame
+	pdl1.global.ci$marker<-'PDL1'
+	 xx<-pdl1.global%>%summary
+	pdl1.global.ci$pvalues<-xx$test$pvalues
+
+ 	##HLADR
+	 hladr.global <- glht(hladr.global, linfct=alpha_noint)
+ 	 hladr.global.ci<-confint(hladr.global, calpha=univariate_calpha())
+  	hladr.global.ci<- hladr.global.ci$confint%>%data.frame
+	hladr.global.ci$marker<-'HLADR'
+	 xx<-hladr.global%>%summary
+	hladr.global.ci$pvalues<-xx$test$pvalues
+
+	##BCL6
+	 bcl6.global <- glht(bcl6.global, linfct=alpha_noint)
+ 	 bcl6.global.ci<-confint(bcl6.global, calpha=univariate_calpha())
+  	bcl6.global.ci<- bcl6.global.ci$confint%>%data.frame
+	bcl6.global.ci$marker<-'BCL6'
+	 xx<-bcl6.global%>%summary
+	bcl6.global.ci$pvalues<-xx$test$pvalues
+
+	##BCL2
+	 bcl2.global <- glht(bcl2.global, linfct=alpha_noint)
+ 	 bcl2.global.ci<-confint(bcl2.global, calpha=univariate_calpha())
+  	bcl2.global.ci<- bcl2.global.ci$confint%>%data.frame
+	bcl2.global.ci$marker<-'BCL2'
+	 xx<-bcl2.global%>%summary
+	bcl2.global.ci$pvalues<-xx$test$pvalues
+
+	##ICOS	
+	 icos.global <- glht(icos.global, linfct=alpha_noint)
+ 	 icos.global.ci<-confint(icos.global, calpha=univariate_calpha())
+  	icos.global.ci<- icos.global.ci$confint%>%data.frame
+	icos.global.ci$marker<-'ICOS'
+	 xx<-icos.global%>%summary
+	icos.global.ci$pvalues<-xx$test$pvalues
+
+	##CD206
+	 cd206.global <- glht(cd206.global, linfct=alpha_noint)
+ 	 cd206.global.ci<-confint(cd206.global, calpha=univariate_calpha())
+  	cd206.global.ci<- cd206.global.ci$confint%>%data.frame
+	cd206.global.ci$marker<-'CD206'
+	 xx<-cd206.global%>%summary
+	cd206.global.ci$pvalues<-xx$test$pvalues
+
+	##vista
+	 vista.global <- glht(vista.global, linfct=alpha_noint)
+ 	 vista.global.ci<-confint(vista.global, calpha=univariate_calpha())
+  	vista.global.ci<- vista.global.ci$confint%>%data.frame
+	vista.global.ci$marker<-'vista'
+	 xx<-vista.global%>%summary
+	vista.global.ci$pvalues<-xx$test$pvalues
+
+	## CD45RO
+	 cd45ro.global <- glht(cd45ro.global, linfct=alpha_noint)
+ 	 cd45ro.global.ci<-confint(cd45ro.global, calpha=univariate_calpha())
+  	cd45ro.global.ci<- cd45ro.global.ci$confint%>%data.frame
+	cd45ro.global.ci$marker<-'CD45RO'
+	 xx<-cd45ro.global%>%summary
+	cd45ro.global.ci$pvalues<-xx$test$pvalues
+
+	## CD45RA
+	 cd45ra.global <- glht(cd45ra.global, linfct=alpha_noint)
+ 	 cd45ra.global.ci<-confint(cd45ra.global, calpha=univariate_calpha())
+  	cd45ra.global.ci<- cd45ra.global.ci$confint%>%data.frame
+	cd45ra.global.ci$marker<-'CD45RA'
+	 xx<-cd45ra.global%>%summary
+	cd45ra.global.ci$pvalues<-xx$test$pvalues
+ 	
+	## cMYC
+	## CD45RA
+	 cmyc.global <- glht(cmyc.global, linfct=alpha_noint)
+ 	 cmyc.global.ci<-confint(cmyc.global, calpha=univariate_calpha())
+  	cmyc.global.ci<- cmyc.global.ci$confint%>%data.frame
+	cmyc.global.ci$marker<-'cMYC'
+	 xx<-cmyc.global%>%summary
+	cmyc.global.ci$pvalues<-xx$test$pvalues
+	
+	
+
+	globalExpr<-rbind(tim3.global.ci,
+	ki.global.ci,
+	pd1.global.ci,
+	lag3.global.ci,
+	cxcr3.global.ci,
+	ccr4.global.ci,
+	pdl1.global.ci,	
+	hladr.global.ci,
+	bcl6.global.ci,
+	bcl2.global.ci,
+	icos.global.ci,
+	cd206.global.ci,
+	vista.global.ci,
+	cd45ro.global.ci,
+	cd45ra.global.ci,
+	cmyc.global.ci)
+
+	globalExpr$pheno<-sapply(strsplit(rownames(globalExpr),"\\."),function(x) x[1])
+
+
+	##write global expression to file.
+	##write to FIGURE2
+	library(openxlsx)
+ 	  fig2<-loadWorkbook("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure2/Figure2.tableData.xlsx")
+	addWorksheet(fig2,"globalExpression.estimates")
+	writeData(fig2,'globalExpression.estimates',
+	globalExpr,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=1)
+	openxlsx::saveWorkbook(fig2,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure2/Figure2.tableData2.xlsx",overwrite=TRUE)
+		
+
+
+ 	
+	## use a SL regression on the 9p24 status and PDL1 on tumor.
+	x9p24<-zz[which(zz$subType.correction=='Tumor'),]%>%group_by(case,unsup.subcommunity,X9p24.Status)%>%summarise(PDL1=mean(Cell_PDL1))%>%data.frame
+	
+x9p24$X9p24.Status<-factor(x9p24$X9p24.Status,levels=c("Normal","Gain","Loss"))
+	 lm(PDL1~X9p24.Status,x9p24[grepl("Tumor_",x9p24[,2]),])%>%summary
+
+	
+
+
+
+
+```
+
+
+### Labeled intensity model estimates
+Here we show the anova estimates over the labeled expression intensity to provide estimates of the labeled annotation family.
+
+```{r, eval=FALSE}
+
+### ANOVA model of the labeled phenotypes, and labeled tumor phenotypes
+
+```{r,eval=FALSE}
+
+###### ANOVA model.
+ ## global model. more comprehensive.
+
+ ### calculate any expression differences across sub-clusters and treatment response.
+ ###   
+  subExpr<-zz%>%group_by(ROIID,annotated.umap.simple)%>%summarise(CXCR3=mean(Cell_CXCR3),
+	CCR4=mean(Cell_CCR4),
+	BCL2=mean(Cell_BCL2),
+	BCL6=mean(Cell_BCL6),
+	CD30=mean(Cell_CD30),
+	Ki67=mean(Cell_Ki67),
+	cMyc=mean(Cell_C),
+	PDL1=mean(Cell_PDL1),
+	TIM3=mean(Cell_Tim3),
+	LAG3=mean(Cell_Lag3),
+	PD1=mean(Cell_PD1),
+	ICOS=mean(Cell_ICOS),
+	Vista=mean(Cell_Vista),
+	CD45RO=mean(Cell_CD45RO),
+	CD45RA=mean(Cell_CD45RA),
+	CD206=mean(Cell_CD206),
+	NND.tumor=mean(NND.Tumor),
+	HLADR=mean(Cell_HLADR),
+	cMYC=mean(Cell_C),
+	CD68=mean(Cell_CD68),
+	CD206=mean(Cell_CD206))%>%data.frame
+
+
+ 
+	## add response clinical variables.
+	subExpr$case<-full.dn4$case[match(subExpr$ROIID,full.dn4$ROIID)]
+	subExpr$response<-full.dn4$response[match(subExpr$case,full.dn4$case)]
+	subExpr$treatment<-full.dn4$treatment.status[match(subExpr$case,full.dn4$case)]
+	subExpr$COO<-full.dn4$COO[match(subExpr$case,full.dn4$case)]
+	##because we are comparing response drop LTF and ND
+	#subExpr<-subExpr[which(subExpr$response!='LTF'),]
+	 ##drop ND
+        #roiOmit<-unique(full.dn4$case[which(full.dn4$treatment.status=='ND')])
+  	#subExpr<-subExpr[which(!subExpr$case%in%roiOmit),]
+	#subExpr$response<-droplevels(subExpr$response)
+
+	subExpr[,2]<-factor(subExpr[,2])
+   	subExpr<-subExpr[which(subExpr[,2]!='none'),]
+  	subExpr[,2]<-droplevels(subExpr[,2])
+
+	alpha<-data.frame(feat=levels(subExpr$annotated.umap.simple),alpha=0)
+ 	alpha<-data.frame(model.matrix(~0+feat,alpha))
+	colnames(alpha)<-gsub("feat","",colnames(alpha))
+
+	####	total levels is 23
+	alpha_noint <- rbind(
+	grandMean=rep(1,23)/23,
+	CD45RA_CD4.vs.mean=ifelse(subExpr[,2]%>%levels=="CD45RA_CD4",22,-1)/23,
+	CD45RA_exhaustedCD4.vs.mean=ifelse(subExpr[,2]%>%levels=="CD45RA_exhaustedCD4",22,-1)/23,
+	CD45RANeg_exhaustedCD4.vs.mean=ifelse(subExpr[,2]%>%levels=="CD45RANeg_exhaustedCD4",22,-1)/23,
+	CD45RA_TIM3_CD4.vs.mean=ifelse(subExpr[,2]%>%levels=="CD45RA_TIM3_CD4",22,-1)/23,
+	Ki67_memoryCD4.vs.mean=ifelse(subExpr[,2]%>%levels=="Ki67_memoryCD4",22,-1)/23,
+	MemoryCD4.vs.mean=ifelse(subExpr[,2]%>%levels=="MemoryCD4",22,-1)/23,
+	#CD8
+	CD8.vs.mean=ifelse(subExpr[,2]%>%levels=="CD8",22,-1)/23,
+	ExhaustedCD8.vs.mean=ifelse(subExpr[,2]%>%levels=="ExhaustedCD8",22,-1)/23,
+	Ki67_CD8.vs.mean=ifelse(subExpr[,2]%>%levels=="Ki67_CD8",22,-1)/23,	
+	## 
+	bcell.vs.mean=ifelse(subExpr[,2]%>%levels=="BCelltumor",22,-1)/23,
+	kimoder.bcell.vs.mean=ifelse(subExpr[,2]%>%levels=="Ki67moderateBCelltumor",22,-1)/23,
+	cmyc.ki.tumor.vs.mean=ifelse(subExpr[,2]%>%levels=="cMYC_Ki67_BCelltumor",22,-1)/23,
+	ki.tumor.vs.mean=ifelse(subExpr[,2]%>%levels=="Ki67_BCelltumor",22,-1)/23,
+	ki.ccr4.tumor.vs.mean=ifelse(subExpr[,2]%>%levels=="Ki67_CCR4_BCelltumor",22,-1)/23,
+	kineg.tumor.vs.mean=ifelse(subExpr[,2]%>%levels=="Ki67Neg_Tumor",22,-1)/23,
+
+
+	suptreg.vs.mean=ifelse(subExpr[,2]%>%levels=="HighlysuppressiveTreg",22,-1)/23,
+	Ki67_Treg.vs.mean=ifelse(subExpr[,2]%>%levels=="Ki67_Treg",22,-1)/23,
+	Treg.vs.mean=ifelse(subExpr[,2]%>%levels=="Treg",22,-1)/23,
+	
+	Ki67_M1Macrophage.vs.mean=ifelse(subExpr[,2]%>%levels=="Ki67_M1Macrophage",22,-1)/23,
+	M1Macrophage.vs.mean=ifelse(subExpr[,2]%>%levels=="M1Macrophage",22,-1)/23,
+	M2Macrophage.vs.mean=ifelse(subExpr[,2]%>%levels=="M2Macrophage",22,-1)/23,
+	PDL1_M2Macrophage.vs.mean=ifelse(subExpr[,2]%>%levels=="PDL1_M2Macrophage",22,-1)/23,
+	##compare M1.vs M2
+	M2.vs.M1=c(rowSums(alpha[,c("PDL1_M2Macrophage","M2Macrophage")])/2-rowSums(alpha[,c("Ki67_M1Macrophage","M1Macrophage")])/2),	
+	Endothelial.vs.mean=ifelse(subExpr[,2]%>%levels=="Endothelial",22,-1)/23)
+
+	## change colname 
+	colnames(subExpr)[2]<-'unsup.subcommunity'
+
+	  library(multcomp);library(lme4)
+	tim3.global <- lmer(TIM3 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	lag3.global <- lmer(LAG3 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	pd1.global <- lmer(PD1 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	cxcr3.global <- lmer(CXCR3 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	ccr4.global <- lmer(CCR4 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	hladr.global <- lmer(HLADR ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	pdl1.global <- lmer(PDL1 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	icos.global <- lmer(ICOS ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	ki67.global <- lmer(Ki67 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	vista.global <- lmer(Vista ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	bcl6.global <- lmer(BCL6 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	bcl2.global <- lmer(BCL2 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	cd206.global <- lmer(CD206 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	cd45ro.global <- lmer(CD45RO ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+	cd45ra.global <- lmer(CD45RA ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+ cd68.global <- lmer(CD68 ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+ cmyc.global <- lmer(cMYC ~ 0+unsup.subcommunity +(1|case), data = subExpr)
+
+	##TIM3
+  tim3.global <- glht(tim3.global, linfct=alpha_noint)
+  tim3.global.ci<-confint(tim3.global, calpha=univariate_calpha())
+  tim3.global.ci<- tim3.global.ci$confint%>%data.frame
+	tim3.global.ci$marker<-'TIM3'
+	 xx<-tim3.global%>%summary
+  tim3.global.ci$pvalues<-xx$test$pvalues
+	##ki67
+	 ki.global <- glht(ki67.global, linfct=alpha_noint)
+ 	 ki.global.ci<-confint(ki.global, calpha=univariate_calpha())
+  	ki.global.ci<- ki.global.ci$confint%>%data.frame
+	ki.global.ci$marker<-'Ki67'
+ 	  xx<-ki.global%>%summary
+	ki.global.ci$pvalues<-xx$test$pvalues
+
+	# PD1
+	 pd1.global <- glht(pd1.global, linfct=alpha_noint)
+ 	 pd1.global.ci<-confint(pd1.global, calpha=univariate_calpha())
+  	pd1.global.ci<- pd1.global.ci$confint%>%data.frame
+	pd1.global.ci$marker<-'PD1'
+ 	 xx<-pd1.global%>%summary
+	pd1.global.ci$pvalues<-xx$test$pvalues
+
+	##Lag3
+	 lag3.global <- glht(lag3.global, linfct=alpha_noint)
+ 	 lag3.global.ci<-confint(lag3.global, calpha=univariate_calpha())
+  	lag3.global.ci<- lag3.global.ci$confint%>%data.frame
+	lag3.global.ci$marker<-'LAG3'
+ 	 xx<-lag3.global%>%summary
+	lag3.global.ci$pvalues<-xx$test$pvalues
+
+	## CXCR3
+	 cxcr3.global <- glht(cxcr3.global, linfct=alpha_noint)
+ 	 cxcr3.global.ci<-confint(cxcr3.global, calpha=univariate_calpha())
+  	cxcr3.global.ci<- cxcr3.global.ci$confint%>%data.frame
+	cxcr3.global.ci$marker<-'CXCR3'
+	 xx<-cxcr3.global%>%summary
+	cxcr3.global.ci$pvalues<-xx$test$pvalues
+
+	## CCR4
+	 ccr4.global <- glht(ccr4.global, linfct=alpha_noint)
+ 	 ccr4.global.ci<-confint(ccr4.global, calpha=univariate_calpha())
+  	ccr4.global.ci<- ccr4.global.ci$confint%>%data.frame
+	ccr4.global.ci$marker<-'CCR4'
+  	xx<-ccr4.global%>%summary
+	ccr4.global.ci$pvalues<-xx$test$pvalues
+	## PDL1
+	 pdl1.global <- glht(pdl1.global, linfct=alpha_noint)
+ 	 pdl1.global.ci<-confint(pdl1.global, calpha=univariate_calpha())
+  	pdl1.global.ci<- pdl1.global.ci$confint%>%data.frame
+	pdl1.global.ci$marker<-'PDL1'
+	 xx<-pdl1.global%>%summary
+	pdl1.global.ci$pvalues<-xx$test$pvalues
+
+ 	##HLADR
+	 hladr.global <- glht(hladr.global, linfct=alpha_noint)
+ 	 hladr.global.ci<-confint(hladr.global, calpha=univariate_calpha())
+  	hladr.global.ci<- hladr.global.ci$confint%>%data.frame
+	hladr.global.ci$marker<-'HLADR'
+	 xx<-hladr.global%>%summary
+	hladr.global.ci$pvalues<-xx$test$pvalues
+
+	##BCL6
+	 bcl6.global <- glht(bcl6.global, linfct=alpha_noint)
+ 	 bcl6.global.ci<-confint(bcl6.global, calpha=univariate_calpha())
+  	bcl6.global.ci<- bcl6.global.ci$confint%>%data.frame
+	bcl6.global.ci$marker<-'BCL6'
+	 xx<-bcl6.global%>%summary
+	bcl6.global.ci$pvalues<-xx$test$pvalues
+
+	##BCL2
+	 bcl2.global <- glht(bcl2.global, linfct=alpha_noint)
+ 	 bcl2.global.ci<-confint(bcl2.global, calpha=univariate_calpha())
+  	bcl2.global.ci<- bcl2.global.ci$confint%>%data.frame
+	bcl2.global.ci$marker<-'BCL2'
+	 xx<-bcl2.global%>%summary
+	bcl2.global.ci$pvalues<-xx$test$pvalues
+
+	##ICOS	
+	 icos.global <- glht(icos.global, linfct=alpha_noint)
+ 	 icos.global.ci<-confint(icos.global, calpha=univariate_calpha())
+  	icos.global.ci<- icos.global.ci$confint%>%data.frame
+	icos.global.ci$marker<-'ICOS'
+	 xx<-icos.global%>%summary
+	icos.global.ci$pvalues<-xx$test$pvalues
+
+	##CD206
+	 cd206.global <- glht(cd206.global, linfct=alpha_noint)
+ 	 cd206.global.ci<-confint(cd206.global, calpha=univariate_calpha())
+  	cd206.global.ci<- cd206.global.ci$confint%>%data.frame
+	cd206.global.ci$marker<-'CD206'
+	 xx<-cd206.global%>%summary
+	cd206.global.ci$pvalues<-xx$test$pvalues
+
+	##vista
+	 vista.global <- glht(vista.global, linfct=alpha_noint)
+ 	 vista.global.ci<-confint(vista.global, calpha=univariate_calpha())
+  	vista.global.ci<- vista.global.ci$confint%>%data.frame
+	vista.global.ci$marker<-'vista'
+	 xx<-vista.global%>%summary
+	vista.global.ci$pvalues<-xx$test$pvalues
+
+	## CD45RO
+	 cd45ro.global <- glht(cd45ro.global, linfct=alpha_noint)
+ 	 cd45ro.global.ci<-confint(cd45ro.global, calpha=univariate_calpha())
+  	cd45ro.global.ci<- cd45ro.global.ci$confint%>%data.frame
+	cd45ro.global.ci$marker<-'CD45RO'
+	 xx<-cd45ro.global%>%summary
+	cd45ro.global.ci$pvalues<-xx$test$pvalues
+
+	## CD45RA
+	 cd45ra.global <- glht(cd45ra.global, linfct=alpha_noint)
+ 	 cd45ra.global.ci<-confint(cd45ra.global, calpha=univariate_calpha())
+  	cd45ra.global.ci<- cd45ra.global.ci$confint%>%data.frame
+	cd45ra.global.ci$marker<-'CD45RA'
+	 xx<-cd45ra.global%>%summary
+	cd45ra.global.ci$pvalues<-xx$test$pvalues
+ 	
+	## cMYC
+	## CD45RA
+	 cmyc.global <- glht(cmyc.global, linfct=alpha_noint)
+ 	 cmyc.global.ci<-confint(cmyc.global, calpha=univariate_calpha())
+  	cmyc.global.ci<- cmyc.global.ci$confint%>%data.frame
+	cmyc.global.ci$marker<-'cMYC'
+	 xx<-cmyc.global%>%summary
+	cmyc.global.ci$pvalues<-xx$test$pvalues
+	
+	
+
+	globalExpr<-rbind(tim3.global.ci,
+	ki.global.ci,
+	pd1.global.ci,
+	lag3.global.ci,
+	cxcr3.global.ci,
+	ccr4.global.ci,
+	pdl1.global.ci,	
+	hladr.global.ci,
+	bcl6.global.ci,
+	bcl2.global.ci,
+	icos.global.ci,
+	cd206.global.ci,
+	vista.global.ci,
+	cd45ro.global.ci,
+	cd45ra.global.ci,
+	cmyc.global.ci)
+
+	globalExpr$pheno<-sapply(strsplit(rownames(globalExpr),"\\."),function(x) x[1])
+
+
+	##write global expression to file.
+	##write to FIGURE2
+	library(openxlsx)
+ 	  fig2<-openxlsx::loadWorkbook("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure2/Figure2.tableData.xlsx")
+	openxlsx::addWorksheet(fig2,"labeledExpression.estimates")
+	openxlsx::writeData(fig2,'labeledExpression.estimates',
+	globalExpr,
+	rowNames=TRUE,withFilter=FALSE,colNames=TRUE,startCol=1,startRow=1)
+	openxlsx::saveWorkbook(fig2,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure2/Figure2.tableData2.xlsx",overwrite=TRUE)
+		
+
+
+ 	# SLR for 9p24 status on PDL1.
+	## use a SL regression on the 9p24 status and PDL1 on tumor.
+	#x9p24<-zz[which(zz$subType.correction=='Tumor'),]%>%group_by(case,unsup.subcommunity,X9p24.Status)%>%summarise(PDL1=mean(Cell_PDL1))%>%data.frame
+	
+  #x9p24$X9p24.Status<-factor(x9p24$X9p24.Status,levels=c("Normal","Gain","Loss"))
+	# lm(PDL1~X9p24.Status,x9p24[grepl("Tumor_",x9p24[,2]),])%>%summary
+
+  # CD206 and TIM-3 over M1/M2 populations. 
+	## LAG3
+	cd206<-cd206.global.ci[c("M1Macrophage.vs.mean",
+	"Ki67_M1Macrophage.vs.mean",
+	"M2Macrophage.vs.mean",
+	"PDL1_M2Macrophage.vs.mean"),]
+	cd206$label<-c("M1-MAC","Ki67+M1-MAC","M2-MAC","PD-L1+M2-MAC")
+	tim3<-tim3.global.ci[c("M1Macrophage.vs.mean",
+	"Ki67_M1Macrophage.vs.mean",
+	"M2Macrophage.vs.mean",
+	"PDL1_M2Macrophage.vs.mean"),]
+	tim3$label<-c("M1-MAC","Ki67+M1-MAC","M2-MAC","PD-L1+M2-MAC")
+	cd206<-rbind(cd206,tim3)
+	ggplot(cd206,aes(x=label,y=Estimate))+geom_point()+geom_errorbar(aes(ymin=lwr,ymax=upr),width=0.2,colour='black')+geom_hline(yintercept=0,color='red',linetype='dashed')+ylab("Average intensity on M2/M1 MACs")+theme_ipsum(base_family='Arial')+theme(axis.text.x=element_text(angle=45,size=16,colour='black',hjust=1),
+axis.text.y=element_text(size=16,colour='black'),
+	axis.title.x=element_text(size=15),
+	axis.title.y=element_text(size=15))+facet_wrap(~marker)
+
+	 ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure3-tables-figures-4-28/macrophage.M2.M1.model.png")
+
+```
+
+
+
+
+
+
+```
+
+
+### Labeled chi-square odds
+Plot the labeled glm odds for NGCB as a vertical plot for labeled phenotypes.
+```{r, eval=FALSE}
+
+ ### COO odds ratio
+  ### assemble the OR for COO
+ labeledglmOdds<-lapply(as.character(unique(full.dn4$annotated.umap.simple))[-10],function(x) logisticRegressionClinicalOdds(pheno=x,full.dn4[which(full.dn4$unsup.subcommunity!='Tumor_11'),],phenotypeColumn="annotated.umap.simple",
+	mycFeature="COO",
+	groupA="GCB"))
+  names(labeledglmOdds)<-sapply(labeledglmOdds,function(x) rownames(x))
+
+ ## using the same NonParameteric test
+ labeledpvals<-lapply(as.character(unique(full.dn4$annotated.umap.simple)),function(x) chiHelperMeanScaleLabeled(pheno=x,full.dn4,phenotypeColumn='annotated.umap.simple'))
+  names(labeledpvals)<-as.character(unique(full.dn4$annotated.umap.simple))
+
+ ##for studying phenotypes, we ignore Tumor_11
+  labeledpvals<-labeledpvals[which(names(pvals)!='Tumor_11')] 
+ 
+ myors<-function(){
+  ors<-unlist(sapply(seq(1,length(labeledpvals)),function(x) labeledpvals[[x]]$measure[2,1]))
+  or.p<-unlist(sapply(seq(1,length(labeledpvals)),function(x) labeledpvals[[x]]$p.value[2,1]))
+ ors<-ifelse(ors>10,5,ors)
+ ors<-data.frame(OR=ors,p=or.p,row.names=names(labeledpvals))
+  ORS<-data.frame(OR=rep(0,length(names(labeledpvals))),row.names=names(labeledpvals))
+   ORS[,1]<-ors[match(rownames(ORS),rownames(ors)),1]
+	ORS["Endothelial",1]<-1
+	ORS$p<-ors[match(rownames(ORS),rownames(ors)),"p"]
+ ORS["Endothelial",2]<-1
+  return(ORS)
+ }
+ labeledORS<-myors()
+
+ labeledORS<-labeledORS[-10,
+ labeldORS<-cbind(labeledORS,labeledglmOdds)
+  library(openxlsx)
+ fig2<-loadWorkbook("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure2/Figure2.tableData.xlsx")
+  addWorksheet(fig2,'labeled.ChiSquare.GLM')
+ writeData(fig2,'labeled.ChiSquare.GLM',labeldORS,rowNames=TRUE)
+ openxlsx::saveWorkbook(fig2,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure2/Figure2.tableData2.xlsx",overwrite=TRUE)
+		
+
+
+
+
+  labeledglmOdds<-t(sapply(labeledglmOdds,function(x) x[3:4]))%>%data.frame
+  labeledglmOdds[,2]<-unlist(labeledglmOdds[,2])
+  labeledglmOdds[,1]<-unlist(labeledglmOdds[,1])
+
+ 
+    labeledGLM<-do.call(rbind.data.frame, glmOdds)
+    labeledGLM[which(labeledGLM[,2]>5),2]<-5
+     labeledGLM[which(labeledGLM[,1]>5),1]<-5
+    labeledGLM[which(labeledGLM[,3]>5),3]<-5
+	labeledGLM[which(labeledGLM[,1]<(-5)),1]<-(-5)
+	labeledGLM$label<-full.dn4$annotated.umap[match(rownames(labeledGLM),full.dn4$annotated.umap.simple)]
+  colnames(labeledGLM)<-c("lower","upper","OddsRatio.GCB","p","label")
+
+
+   ggplot(labeledGLM[!grepl("umor",rownames(labeledGLM)),],aes(x=label,y=OddsRatio.GCB))+geom_point(size=4)+geom_errorbar(aes(ymin=lower,ymax=upper))+theme_ipsum(base_family='Arial')+theme(axis.text.x=element_text(angle=90,size=18,colour='black'),axis.text.y=element_text(size=18,colour='black'),axis.title.x=element_text(size=12),axis.title.y=element_text(size=12))+ylab('Cox proportional hazard estimate')+xlab("Major cell component sub-cluster")+coord_flip()+geom_hline(yintercept=1,colour='red',linetype='dashed')+xlab("Labeled phenotypes")+ylab("GLM Odds ratio estimate GCB(>1)/NGCB(<1)")
+
+  ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/final-figure2/GLM.labeled.phenotypes.GCB.vs.NGCB.png")
 
 
 ```

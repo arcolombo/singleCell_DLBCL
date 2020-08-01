@@ -582,14 +582,14 @@ full.dn4$subType.reassignedLabel[which(full.dn4$subType=="Th_9")]<-"Th_9.Reassig
 	markers=c(lineage_markers,induc))
   savePlot(file="CD4_subMeta.cluster.png")
   ## CD8
-  full.dn4<-metaClusterPhenotype(dn4=full.dn4,
+  full.dn4<-metaClusterPhenotype(dn4=full.dn4[which(full.dn4$dimCD20.filtered=="NO"),],
 	phenotype="CD8",
 	myPheno="subType.correction",
 	markers=c(lineage_markers,induc))
    savePlot(file="CD8_subMeta.cluster.png")
   table(full.dn4$subType.correction,full.dn4$CD8_subphenograph_cluster_meta)
  ## TREG
-  full.dn4<-metaClusterPhenotype(dn4=full.dn4,
+  full.dn4<-metaClusterPhenotype(dn4=full.dn4[which(full.dn4$dimCD20.filtered=="NO"),],
 	phenotype="TREG",
 	myPheno="subType.correction",
 	markers=c(lineage_markers,induc))
@@ -597,14 +597,14 @@ full.dn4$subType.reassignedLabel[which(full.dn4$subType=="Th_9")]<-"Th_9.Reassig
 
  table(full.dn4$subType.correction,full.dn4$TREG_subphenograph_cluster_meta)
  ##MAC
- full.dn4<-metaClusterPhenotype(dn4=full.dn4,
+ full.dn4<-metaClusterPhenotype(dn4=full.dn4[which(full.dn4$dimCD20.filtered=="NO"),],
 	phenotype="Macrophage",
 	myPheno="subType.correction",
 	markers=c(lineage_markers,induc))
  savePlot(file="MAC_subMeta.cluster.png")
   table(full.dn4$subType.correction,full.dn4$Macrophage_subphenograph_cluster_meta)
 
-  full.dn4<-metaClusterPhenotype(dn4=full.dn4,
+  full.dn4<-metaClusterPhenotype(dn4=full.dn4[which(full.dn4$dimCD20.filtered=="NO"),],
 	phenotype="Tumor",
 	myPheno="subType.correction",
 	markers=c(lineage_markers,induc))

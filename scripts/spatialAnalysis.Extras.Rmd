@@ -1,0 +1,183 @@
+
+### Neighborhood analysis comparing REF to CR enriched phenotypes
+ We summarize the neighborhood of each annotated cluster.
+ We identify the neighborhood interactions using the annotated cluster phenotypes.
+```{r,eval=FALSE}
+
+  dat_cells<-data.frame(ImageNumber=full.dn4$ROIID,
+	ObjectNumber=full.dn4$CellId,
+	label=as.character(full.dn4$annotated.label.simple),
+	group=full.dn4$ROIID)
+  dat_cells<-data.table(dat_cells)
+  dat_relation_15<-createRelationTable(dn5=full.dn4,
+	myPheno="annotated.label.simple",
+	minDistance=15)
+  save(dat_relation_15,file="dat_relation_15_annotatedLabel.simple.community.15distance.RData")
+
+  p1<-makePermutationNBHD(dat_cells=dat_cells,
+	dat_relation=dat_relation_15,
+	n_perm=1000)
+  save(p1,file="p1_15_annotatedLabel.simple.phentype.15distance.RData")
+  
+ datp<-p1$dat_p
+ datp$response<-full.dn4$response[match(datp$group,full.dn4$ROIID)]
+  nd.omit<-unique(full.dn4$ROIID[which(full.dn4$treatment.status=='ND')])
+  datp<-datp[!datp$group%in%nd.omit,]
+  datp<-datp[which(datp$response!='LTF'),]
+  datp$response<-droplevels(datp$response)
+  ## describing only the neighborhood (not attraction).
+ datp<-datp[which(datp$sigval==1),]
+
+  
+ nbd<-datp%>%group_by(FirstLabel,SecondLabel,response)%>%summarise(Sum=sum(sigval),N=n())%>%data.frame
+ ##omitting dimCD20 cluster
+ nbd<-nbd[which(nbd$FirstLabel!='Tumor.dimCD20' & nbd$SecondLabel!='Tumor.dimCD20'),]
+
+ ## REF Tumor NBD  BCL6+BCL2+ Tumor
+  ##BCL6+BCL2+
+ ref.tum.nbd<-nbd[which(nbd$FirstLabel=='BCL6BCL2Tumor'),]
+ ref.tum.nbd<-ref.tum.nbd[!grepl("Tumor",ref.tum.nbd$SecondLabel),]
+
+  ref.tum.nbd$prop<-0
+  ref.tum.nbd$prop[which(ref.tum.nbd$response=='CR')]<-ref.tum.nbd$Sum[which(ref.tum.nbd$response=='CR')]/sum(ref.tum.nbd$Sum[which(ref.tum.nbd$response=='CR')])
+  ref.tum.nbd$prop[which(ref.tum.nbd$response!='CR')]<-ref.tum.nbd$Sum[which(ref.tum.nbd$response!='CR')]/sum(ref.tum.nbd$Sum[which(ref.tum.nbd$response!='CR')])
+
+  ref.tum.nbd$SecondLabel<-droplevels(ref.tum.nbd$SecondLabel)
+ ref.tum.nbd$colors<-phenoColsLabel$colors[match(ref.tum.nbd$SecondLabel,phenoColsLabel$easyLabel)]
+
+  ggplot(ref.tum.nbd,aes(x=response,y=prop,fill=SecondLabel))+geom_bar(stat='identity')+scale_fill_manual(values=phenoColsLabel$colors[match(levels(ref.tum.nbd$SecondLabel),phenoColsLabel$easyLabel)])+theme_ipsum(base_family='Arial')+ggtitle("BCL6+BCL2+Tumor neighborhood (6,10)")
+
+
+
+ ## CR Tumor NBD BCell
+ ## CD20+B-cell
+  cr.tum.nbd<-nbd[which(nbd$FirstLabel=='Tumor'),]
+
+
+ 
+
+```
+
+
+
+### mixed effects model for Figure 3
+
+
+```{r,eval=FALSE}
+
+  distNND<-full.dn4[which(full.dn4$treatment.status!='ND' & full.dn4$response!='LTF'& full.dn4$unsup.subcommunity!="Tumor_11"),]%>%group_by(ROIID,annotated.label.simple)%>%summarise(NND.tumor=mean(k_1_Tumor))%>%data.frame
+    distNND$case<-full.dn4$case[match(distNND$ROIID,full.dn4$ROIID)]
+  distNND$response<-full.dn4$response[match(distNND$case,full.dn4$case)]
+  distNND$response<-droplevels(distNND$response)  
+
+  nnd<-aov(NND.tumor~0+annotated.label.simple*response,distNND)
+   nnd.eff<-model.tables(nnd,'effects')
+
+  distNND$annotated.label.simple<-factor(distNND$annotated.label.simple)
+
+### model the effect estimates for global trends.
+	nnd.global <- lmer(NND.tumor ~ 0+annotated.label.simple+response +(1|case), data = distNND)
+
+  des<-rep(0,19)
+  names(des)<-c(distNND[,2]%>%levels,'response')
+	## global model. more comprehensive.
+	####	total levels is 37
+	alpha_noint <- rbind(
+	grandMean=c(rep(1,18)/18,0),
+	ref=c(rep(0,18),1/2),
+	cd45ra.ex.ref=c(ifelse(distNND[,2]%>%levels=="CD45RA_ExhaustedCD4",17,0)/18,1/2),
+	cd45ra.ex.cr=c(ifelse(distNND[,2]%>%levels=="CD45RA_ExhaustedCD4",17,0)/18,0),
+  CD45RANeg_ExhaustedCD4.ex.ref=c(ifelse(distNND[,2]%>%levels=="CD45RANeg_ExhaustedCD4",17,0)/18,1/2),
+  CD45RANeg_ExhaustedCD4.ex.cr=c(ifelse(distNND[,2]%>%levels=="CD45RANeg_ExhaustedCD4",17,0)/18,0),  
+  CD8.ex.ref=c(ifelse(distNND[,2]%>%levels=="CD8",17,0)/18,1/2),
+  CD8.ex.cr=c(ifelse(distNND[,2]%>%levels=="CD8",17,0)/18,0),
+ Endothelial.ex.ref=c(ifelse(distNND[,2]%>%levels=="Endothelial",17,0)/18,1/2),
+  Endothelial.ex.cr=c(ifelse(distNND[,2]%>%levels=="Endothelial",17,0)/18,0),
+ ExhaustedCD8.ex.ref=c(ifelse(distNND[,2]%>%levels=="ExhaustedCD8",17,0)/18,1/2),
+  ExhaustedCD8.ex.cr=c(ifelse(distNND[,2]%>%levels=="ExhaustedCD8",17,0)/18,0),
+ Ki67CD4.ex.ref=c(ifelse(distNND[,2]%>%levels=="Ki67CD4",17,0)/18,1/2),
+  Ki67CD4.ex.cr=c(ifelse(distNND[,2]%>%levels=="Ki67CD4",17,0)/18,0),
+  Ki67CD8.ex.ref=c(ifelse(distNND[,2]%>%levels=="Ki67CD8",17,0)/18,1/2),
+  Ki67CD8.ex.cr=c(ifelse(distNND[,2]%>%levels=="Ki67CD8",17,0)/18,0),
+ Ki67M1MAC.ex.ref=c(ifelse(distNND[,2]%>%levels=="Ki67M1MAC",17,0)/18,1/2),
+  Ki67M1MAC.ex.cr=c(ifelse(distNND[,2]%>%levels=="Ki67M1MAC",17,0)/18,0),
+Ki67TREG.ex.ref=c(ifelse(distNND[,2]%>%levels=="Ki67TREG",17,0)/18,1/2),
+  Ki67TREG.ex.cr=c(ifelse(distNND[,2]%>%levels=="Ki67TREG",17,0)/18,0),
+M1MAC.ex.ref=c(ifelse(distNND[,2]%>%levels=="M1MAC",17,0)/18,1/2),
+  M1MAC.ex.cr=c(ifelse(distNND[,2]%>%levels=="M1MAC",17,0)/18,0),
+M2MAC.ex.ref=c(ifelse(distNND[,2]%>%levels=="M2MAC",17,0)/18,1/2),
+  M2MAC.ex.cr=c(ifelse(distNND[,2]%>%levels=="M2MAC",17,0)/18,0),
+MemoryCD4.ex.ref=c(ifelse(distNND[,2]%>%levels=="MemoryCD4",17,0)/18,1/2),
+  MemoryCD4.ex.cr=c(ifelse(distNND[,2]%>%levels=="MemoryCD4",17,0)/18,0),
+
+PDL1M2MAC.ex.ref=c(ifelse(distNND[,2]%>%levels=="PDL1M2MAC",17,0)/18,1/2),
+  PDL1M2MAC.ex.cr=c(ifelse(distNND[,2]%>%levels=="PDL1M2MAC",17,0)/18,0),
+
+PDL1Tumor.ex.ref=c(ifelse(distNND[,2]%>%levels=="PDL1Tumor",17,0)/18,1/2),
+  PDL1Tumor.ex.cr=c(ifelse(distNND[,2]%>%levels=="PDL1Tumor",17,0)/18,0),
+
+SuppressiveTREG.ex.ref=c(ifelse(distNND[,2]%>%levels=="SuppressiveTREG",17,0)/18,1/2),
+  SuppressiveTREG.ex.cr=c(ifelse(distNND[,2]%>%levels=="SuppressiveTREG",17,0)/18,0),
+ 
+TEMRACD4.ex.ref=c(ifelse(distNND[,2]%>%levels=="TEMRACD4",17,0)/18,1/2),
+  TEMRACD4.ex.cr=c(ifelse(distNND[,2]%>%levels=="TEMRACD4",17,0)/18,0),
+
+ TREG.ex.ref=c(ifelse(distNND[,2]%>%levels=="TREG",17,0)/18,1/2),
+  TREG.ex.cr=c(ifelse(distNND[,2]%>%levels=="TREG",17,0)/18,0),
+ Tumor.ex.ref=c(ifelse(distNND[,2]%>%levels=="Tumor",17,0)/18,1/2),
+  Tumor.ex.cr=c(ifelse(distNND[,2]%>%levels=="Tumor",17,0)/18,0))
+
+
+
+
+
+   library(multcomp);library(lme4)
+
+  nnd.g <- glht(nnd.global, linfct=alpha_noint)
+  nnd.global.ci<-confint(nnd.g, calpha=univariate_calpha())
+  nnd.global.ci<- nnd.global.ci$confint%>%data.frame
+	tim3.global.ci$marker<-'TIM3'
+
+
+
+```
+
+
+### Umap the distance matrix
+```{r,eval=FALSE}
+
+ ### umap the distances. 
+ #umap_nnd<-umap::umap(roiDist[,grepl("k_1_",colnames(roiDist))])
+ # get the layout
+  #umap.nnd<-as.data.frame(umap_nnd$layout)
+  #umap.nnd$uniqueLabel<-full.dn4$uniqueLabel
+ ## append to the full data 
+   #full.dn4$umap_nnd1<-full.dn4$umap_nnd2<-NA
+   #full.dn4$umap_nnd1[match(umap.nnd$uniqueLabel,full.dn4$uniqueLabel)]<-umap.nnd[,1]
+   #full.dn4$umap_nnd2[match(umap.nnd$uniqueLabel,full.dn4$uniqueLabel)]<-umap.nnd[,2]
+    full.dn4<-left_join(full.dn4[,!grepl("k_1_",colnames(full.dn4))],roiDist,by=c('uniqueLabel','ROIID'))
+
+   #ump<-full.dn4[which(!is.na(full.dn4$umap_nnd1) & !is.na(full.dn4$umap_nnd2)),c("umap_nnd1",
+	#"umap_nnd2",
+	#"uniqueLabel","response","ROIID",
+	#colnames(roiDist[,grepl("k_1_",colnames(roiDist))]),
+	#"annotated.umap")]
+
+ # ump$primary.phenotype<-(ump$annotated.umap)
+ #   ump<-ump[which(!is.na(ump$annotated.umap)),]
+ # phenoColorsLabel<-getPhenoColorsAnnotatedLabelUMAP(full.dn4)
+ # phenoColorsLabel<-phenoColorsLabel[-19]
+ #  responseColorsLabel<-getResponderColors() 
+  #names(responseColorsLabel)<-c("CR","Primary refract","not enriched")
+
+   ### global umap plotting.
+  #full<-ggplot(ump,  aes(x = umap_nnd1, y = umap_nnd2, color = scale(k_1_HighlysuppressiveTreg))) +
+ # geom_point(size = 0.8) +
+ # theme_ipsum(base_family='Arial') +
+ # scale_color_manual(values = phenoColorsLabel) +
+ # guides(color = guide_legend(override.aes = list(size = 4), ncol = 2))
+ # full
+
+
+```
+
