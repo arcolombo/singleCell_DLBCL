@@ -1,0 +1,1799 @@
+---
+title: "Single-cell spatial analysis of tumor immune architecture in diffuse large B cell lymphoma"
+author: " Anthony Colombo+,Monirath Hav+, Erik Gerdtsson, Mohan Singh, Alexander Xu, Denaly Chen, Jane Houldsworth, Rita Shaknovich, Tomohiro Aoki, Lauren Chong, Katsuyoshi Takata, Elizabeth Chavez, Christian Steidl, James Hicks, Peter Kuhn, Imran Siddiqi, Akil Merchant*"
+date: "`r Sys.Date()`"
+output: html_document
+fig_width: 15
+fig_height: 15 
+---
+
+
+# {.tabset}  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup {.tabset}
+
+### Library
+```{r library}
+library(Rphenograph)
+
+```
+
+### Helper Functions
+
+```{r helperFunction, eval=TRUE}
+
+
+getPhenoColors<-function(full.dn4){
+ require(circlize)
+  tsn<-full.dn4[which(!is.na(full.dn4$tSNE1) & !is.na(full.dn4$tSNE2)),c("tSNE1",
+	"tSNE2",
+	"Cell_CD20",
+	"Cell_CD3",
+	"Cell_CD4",
+	"Cell_CD31",
+	"Cell_CD4",
+	"Cell_CD68",
+	"Cell_CD8",
+	"Cell_FOXP3",
+	"Cell_BCL2",
+	"uniqueLabel","response","ROIID",
+	"unsup.subcommunity")]
+  ##balanced response representation.
+   table(tsn$response)
+  tsn$primary.phenotype<-as.character(tsn$unsup.subcommunity)
+ tsn$primary.phenotype<-factor(tsn$primary.phenotype)
+   cd8s<-colorRampPalette(c("darkseagreen","green"),20)
+  cd4s<-colorRampPalette(c("lightsteelblue1","blue"),20)
+  macs<-colorRampPalette(c("magenta","maroon4"),20)
+   tregs<-colorRampPalette(c("plum2","purple"),20)
+   tumrs<-colorRampPalette(c("grey24","grey64"),20)
+   phenoColors<-c(cd4s(14)[seq(1,14,2)],
+	cd8s(14)[seq(1,14,2)],"red",macs(12)[seq(1,12,2)],tregs(12)[seq(1,12,2)],tumrs(10))
+
+ names(phenoColors)<-levels(factor(tsn$primary.phenotype))
+   ##manual color change code.
+   phenoColors["Macrophage_2"]<-"darkblue"
+   phenoColors["Macrophage_5"]<-"yellow"
+   phenoColors["CD8_7"]<-"black"
+
+   return(phenoColors)
+ }
+
+
+
+zScorePatientExpression<-function(full.dn4=NULL,markers=NULL,ROIID.column=NULL){
+  X3<-full.dn4[,c(markers,ROIID.column)]%>%group_by(ROIID)%>%summarise_all(funs(sd))%>%data.frame
+  X2<-full.dn4[,c(markers,ROIID.column)]%>%group_by(ROIID)%>%summarise_all(funs(mean))%>%data.frame
+   ###
+   z<-full.dn4
+  for(cl in unique(full.dn4$ROIID)){
+   for(mark in colnames(X2)[-1]){
+  z[which(z$ROIID==cl),which(colnames(z)==mark)]<- ( z[which(z$ROIID==cl),which(colnames(z)==mark)]-X2[which(X2$ROIID==cl),which(colnames(X2)==mark)])/(X3[which(X3$ROIID==cl),which(colnames(X3)==mark)])
+   }
+ }
+ return(z)
+ }
+
+
+
+metaClusterPhenotype<-function(dn4=NULL,phenotype=NULL,myPheno=NULL,markers=NULL,plotPCA=FALSE,k2=15){
+ #myPheno is the column for the phenotype.
+    
+   erik<-subset(dn4,dn4[,myPheno]==phenotype)
+  ## subMeta holds the casePheno 
+  dn4[,paste0(phenotype,"_subMeta")]<-NA
+    erik[,paste0(phenotype,"_subMeta")]<-NA
+ require(Rphenograph)
+   roiData<-as.data.frame.matrix(table(erik$ROIID,erik[,myPheno]))
+
+   for(roi in rownames(roiData)[which(roiData[,phenotype]>45)]){
+     myroi<-subset(erik,erik$ROIID==roi)
+     graph<-Rphenograph(myroi[,markers],k=45)
+     myroi[,paste0(phenotype,"_subMeta")]<-membership(graph[[2]])
+    dn4[match(myroi$uniqueLabel,dn4$uniqueLabel),paste0(phenotype,"_subMeta")]<-membership(graph[[2]])
+     erik[match(myroi$uniqueLabel,erik$uniqueLabel),paste0(phenotype,"_subMeta")]<-membership(graph[[2]])
+   }
+
+  ErikMeta=erik[,
+	c(markers,
+	"ROIID",
+	paste0(phenotype,"_subMeta"))] %>% group_by(ROIID,.dots=paste0(phenotype,"_subMeta")) %>% 
+       dplyr::summarise_all(funs(median)) %>%data.frame
+     
+          ##Levine used k=15 for meta.
+     erikPheno<- Rphenograph(ErikMeta[,c(markers)], k = k2)
+     subphenograph_cluster_meta<- factor(membership(erikPheno[[2]]))
+     table(subphenograph_cluster_meta)
+     ErikMeta=cbind(ErikMeta, subphenograph_cluster_meta)
+     ### plot PCA, label each case.  COO,  status.  ## 
+   if( any(colnames(erik)== paste0(phenotype,"_subphenograph_cluster_meta"))){
+     erik<-erik[,which(colnames(erik)!= paste0(phenotype,"_subphenograph_cluster_meta"))]
+ } 
+
+   myLocal=left_join(erik, ErikMeta[,c("ROIID",paste0(phenotype,"_subMeta"),"subphenograph_cluster_meta")], by = c("ROIID"))
+  colnames(myLocal)[which(colnames(myLocal)=="subphenograph_cluster_meta")]<-paste0(phenotype,"_subphenograph_cluster_meta") 
+  dn4[,paste0(phenotype,"_subphenograph_cluster_meta")]<-NA
+  dn4[match(myLocal$uniqueLabel,dn4$uniqueLabel),paste0(phenotype,"_subphenograph_cluster_meta")]<-myLocal[,which(colnames(myLocal)==paste0(phenotype,"_subphenograph_cluster_meta"))]
+
+  plot_clustering_heatmap_wrapper(expr=ErikMeta[,c(markers)], 
+  cell_clustering=ErikMeta[,"subphenograph_cluster_meta"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=NULL)
+ return(dn4)
+}
+
+
+
+plot_clustering_heatmap_wrapper<-function(expr=NULL, 
+  cell_clustering=NULL, cluster_merging = NULL,useMedians=TRUE,useQuantiles=FALSE,
+color_clusters=NULL){
+  ## cluster_merging should be character merging vector of 29 or so clusters. this is input from the ANNOTATION object.  not a matched object level.
+   expr<-as.matrix(expr)
+  if(useQuantiles==TRUE){
+  ##max min normalization
+  library(matrixStats)
+  rng <- colQuantiles(expr, probs = c(0.001, 0.999))
+  expr01 <- t((t(expr) - rng[, 1]) / (rng[, 2] - rng[, 1]))
+  expr01[expr01 < 0] <- 0
+  expr01[expr01 > 1] <- 1
+  }else{
+   expr01<-expr 
+
+  }
+
+ if(is.null(color_clusters)==TRUE){
+  color_clusters <- c("#DC050C", "#FB8072", "#1965B0", "#7BAFDE", "#882E72", 
+  "#B17BA6", "#FF7F00", "#FDB462", "#E7298A", "#E78AC3", 
+  "#33A02C", "#B2DF8A", "#55A1B1", "#8DD3C7", "#A6761D", 
+  "#E6AB02", "#7570B3", "#BEAED4", "#666666", "#999999", 
+  "#aa8282", "#d4b7b7", "#8600bf", "#ba5ce3", "#808000", 
+  "#aeae5c", "#1e90ff", "#00bfff", "#56ff0d", "#ffff00")
+ }
+
+  # Calculate the median expression 
+  library(dplyr)
+  expr_median <- data.frame(expr, cell_clustering = cell_clustering) %>%
+   dplyr::group_by(cell_clustering) %>% 
+    dplyr::summarize_all(funs(median))
+ if(useMedians==TRUE){
+  expr01_median <- data.frame(expr01, cell_clustering = cell_clustering) %>%
+    group_by(cell_clustering) %>% 
+    dplyr::summarize_all(funs(median))
+   }else{
+   expr01_median <- data.frame(expr01, cell_clustering = cell_clustering) %>%
+    dplyr::group_by(cell_clustering) %>% 
+   dplyr::summarize_all(funs(mean))
+ }
+  # Calculate cluster frequencies
+  clustering_table <- as.numeric(table(cell_clustering))
+   print(dim(expr_median))
+  # This clustering is based on the markers that were used for the main clustering
+  d <- dist(expr_median[, colnames(expr)], method = "euclidean")
+  cluster_rows <- hclust(d, method = "average")
+   expr_heat <- as.matrix(expr01_median[, colnames(expr01)])
+  rownames(expr_heat) <- expr01_median$cell_clustering
+ 
+  labels_row <- paste0(rownames(expr_heat), " (", 
+    round(clustering_table / sum(clustering_table) * 100, 2), "%)")
+  labels_col <- colnames(expr_heat)
+  
+  # Row annotation for the heatmap
+  annotation_row <- data.frame(cluster = factor(expr01_median$cell_clustering))
+  rownames(annotation_row) <- rownames(expr_heat)
+  
+  color_clusters <- color_clusters[1:nlevels(annotation_row$cluster)]
+  names(color_clusters) <- levels(annotation_row$cluster)
+  annotation_colors <- list(cluster = color_clusters)
+  annotation_legend <- FALSE
+  
+  if(!is.null(cluster_merging)){
+    
+    annotation_row$cluster_merging <- factor(cluster_merging)
+    color_clusters <- color_clusters[1:nlevels(factor(cluster_merging))]
+    names(color_clusters) <- levels(factor(cluster_merging))
+    annotation_colors$cluster_merging <- color_clusters
+    annotation_legend <- TRUE
+  }
+  
+  # Colors for the heatmap
+  library(RColorBrewer);library(pheatmap)
+  color <- colorRampPalette(rev(brewer.pal(n = 9, name = "RdYlBu")))(100)
+  
+  pheatmap::pheatmap(expr_heat, color = color, 
+    cluster_cols = FALSE, cluster_rows = cluster_rows, 
+    labels_col = labels_col, labels_row = labels_row, 
+    display_numbers = TRUE, number_color = "black", 
+    fontsize = 10, fontsize_number = 7,
+    annotation_row = annotation_row, annotation_colors = annotation_colors,
+    annotation_legend = annotation_legend)
+  
+}
+
+
+
+mynormalize<-function(data=NULL,percentile=NULL){
+   if(percentile>1){
+     percentile<-percentile/100
+   }
+    if(is.null(percentile)==TRUE){
+    minValues<-apply(data,2,min)
+    maxValues<-apply(data,2,max) 
+   }else{
+    minValues<-apply(data,2,function(x) quantile(x,1-percentile)  )
+    maxValues<-apply(data,2,function(x) quantile(x,percentile)  )
+   }
+    hv2<-maxValues-minValues
+    dataXR<-data
+    stopifnot(all( colnames(data)==names(minValues)))
+    stopifnot(all(colnames(data)==names(maxValues)))
+    stopifnot(all(colnames(data)==names(hv2)))
+    for(j in 1:ncol(data)){
+    dataXR[,j]<-(data[,j]-minValues[j])/hv2[j]
+    }
+    dataXR[dataXR<0]<-0
+    dataXR[dataXR>1]<-1
+
+  stopifnot(all(apply(dataXR,2,max)==1))
+  stopifnot(all(apply(dataXR,2,min)==0))
+   return(dataXR)
+}
+
+## copied from blood-revision-diffCyt-association
+mutationClinicalSheetAssembly<-function(mutationsToGather=c("TP53","BCL2","BCL6","CD79B","SGK1","MYD88","MYC","NOTCH1","NOTCH2","EZH2","CREBBP"),full.dn4=NULL){
+ ## the mutation of MYD88 is specifically controlled for L265P region.
+ ## the column header for the non-syn SNP annotation for MYD88 is AA.Mutation.Cosmic_v70
+
+   mutations<-read.csv("~/IMC-Ranalysis/DLBCL/mutational-genomic-table/TMA CGI genomic data.csv",header=T)
+   colnames(mutations)<-gsub("USC076","USC76",colnames(mutations))
+  #  clinic<-read.csv("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-mutation-analysis/patient.clinical.table.csv",header=T)
+    # library(XLConnect) 
+  # wb<-XLConnect::loadWorkbook("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-mutation-analysis/clinicalDataRevisedFinal_final.xlsx")
+  # clinic <- readWorksheet(wb, 1);  
+   clinic<-read.csv("~/IMC-Ranalysis/DLBCL/simpleModel-1-14/DLBCL-mutation-analysis/clinicalDataRevisedFinal_finalSheet.csv",header=T)
+
+  clinic$MB<-gsub(" ","",clinic$End..MB)
+ mut.tag<-colnames(mutations)[9:67]
+  mutt<-data.frame(mut.tag,id=sapply(strsplit(gsub("\\.","_",mut.tag),"_"),function(x) x[1])
+) 
+
+  mutt$id[which(mutt[,"id"]=="USC076")]<-"USC76"
+  tag<- as.character(clinic[,"MB"])
+  tag<-gsub(" ","",tag)
+  tag<-data.frame(tag=tag,stringsAsFactors=FALSE)
+  inters<-intersect(tag[,1],mutt$id)
+   key<-data.frame(MB=tag[match(inters,tag[,1]),],stringsAsFactors=FALSE)
+  key$id<-mutt[match(inters,mutt[,2]),1]
+ ##fix a column header
+ ## USC76 has a funcy header.
+ ##
+  casemuts<-mutations[,match(key$id,colnames(mutations))]
+  casemuts$gene.name<-mutations[,"gene_name..Homo_sapiens_ensembl_v74_mRNA."]
+  casemuts$chromosome<-as.character(mutations$Chromosome)
+ casemuts$aminoAcid<-as.character(mutations$AA.Mutation.Cosmic_v70)
+ casemuts$aminoAcid<-gsub( "\"","",mutations$AA.Mutation.Cosmic_v70)
+  casemuts$gene.name<-as.character(casemuts$gene.name)
+ ##for MYD88, the gene name will have the aminoAcid appended.
+  casemuts$gene.name[which(casemuts$gene.name=="MYD88" & casemuts$aminoAcid=="L265P, L265P")]<-"MYD88.L265P"
+  casemuts<-casemuts[which(casemuts$aminoAcid!="S219C, S219C, S219C, S219C" & casemuts$aminoAcid!="M232T, M232T" & casemuts$aminoAcid!="0.999, 0.999" & casemuts$aminoAcid!="S251N, S243N, S251N, S243N"),]
+  casemuts[which(casemuts$gene.name=="MYD88" & casemuts$chromosome==""),"gene.name"]<-"MYD88.L265P"
+ casemuts[which(casemuts$gene.name=="MYD88.L265P" & casemuts$chromosome==""),1:20]<-ifelse(casemuts[which(casemuts$gene.name=="MYD88.L265P" & casemuts$chromosome!=""),1:20]!=0,1,0)
+  casem<- casemuts[which(casemuts$chromosome==""),]
+ mutationsToGather[which(mutationsToGather=="MYD88")]<-"MYD88.L265P"
+  dat<-casem[casem$gene.name%in%mutationsToGather,]
+   ### 
+   for(i in mutationsToGather){
+  key[,i]<-0
+ key[match(colnames(dat)[which(dat[dat$gene.name==i,]==1)],key$id),i]<-1
+   }
+  #write.csv(key,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-mutation-analysis/Mutational.CNV.categorical.table.csv")
+write.csv(key,file="~/IMC-Ranalysis/DLBCL/simpleModel-1-14/DLBCL-mutation-analysis/Mutational.CNV.categorical.table.csv")
+
+  ## append to the clinical sheet
+  clinic2<-clinic[,!colnames(clinic)%in%mutationsToGather]
+ clinic2<-left_join(clinic2,key[,c("MB",mutationsToGather)],by="MB")
+  for(i in mutationsToGather){
+  clinic2[which(is.na(clinic2[,i])), i]<-0
+  }
+ ##add the factor to control for replicates
+  replicate<-model.matrix(~0+clinic2$MB)
+  replicate<-replicate[,which(colSums(replicate)>1)]  
+ colnames(replicate)<-substring(colnames(replicate),11)
+  clinic2<-data.frame(clinic2,replicate)
+ clinic2$WES.avail<-FALSE
+  clinic2$WES.avail[match(key$MB,clinic2$MB)]<-TRUE
+ clinic2$Case_ID<-paste0("Case_",clinic2$X)
+  return(clinic2)
+
+}
+
+
+
+mutationClinicalSheetAssembly_deprecated<-function(mutationsToGather=c("TP53","BCL2","BCL6","CD79B","SGK1","MYD88","MYC","NOTCH1","NOTCH2","EZH2","CREBBP"),full.dn4=NULL){
+ ## the mutation of MYD88 is specifically controlled for L265P region.
+ ## the column header for the non-syn SNP annotation for MYD88 is AA.Mutation.Cosmic_v70
+
+   mutations<-read.csv("~/Documents/imageAnalysis/DLBCL/monirath/myData/mutational-genomic-table/TMA CGI genomic data.csv")
+   colnames(mutations)<-gsub("USC076","USC76",colnames(mutations))
+  #  clinic<-read.csv("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-mutation-analysis/patient.clinical.table.csv",header=T)
+     library(XLConnect) 
+   wb<-XLConnect::loadWorkbook("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-mutation-analysis/clinicalDataRevisedFinal_final.xlsx")
+   clinic <- readWorksheet(wb, 1);  
+  clinic$MB<-gsub(" ","",clinic$End..MB)
+ mut.tag<-colnames(mutations)[9:67]
+  mutt<-data.frame(mut.tag,id=sapply(strsplit(gsub("\\.","_",mut.tag),"_"),function(x) x[1])
+) 
+
+  mutt$id[which(mutt[,"id"]=="USC076")]<-"USC76"
+  tag<- as.character(clinic[,"MB"])
+  tag<-gsub(" ","",tag)
+  tag<-data.frame(tag=tag,stringsAsFactors=FALSE)
+  inters<-intersect(tag[,1],mutt$id)
+   key<-data.frame(MB=tag[match(inters,tag[,1]),],stringsAsFactors=FALSE)
+  key$id<-mutt[match(inters,mutt[,2]),1]
+ ##fix a column header
+ ## USC76 has a funcy header.
+ ##
+  casemuts<-mutations[,match(key$id,colnames(mutations))]
+  casemuts$gene.name<-mutations[,"gene_name..Homo_sapiens_ensembl_v74_mRNA."]
+  casemuts$chromosome<-as.character(mutations$Chromosome)
+ casemuts$aminoAcid<-as.character(mutations$AA.Mutation.Cosmic_v70)
+ casemuts$aminoAcid<-gsub( "\"","",mutations$AA.Mutation.Cosmic_v70)
+  casemuts$gene.name<-as.character(casemuts$gene.name)
+ ##for MYD88, the gene name will have the aminoAcid appended.
+  casemuts$gene.name[which(casemuts$gene.name=="MYD88" & casemuts$aminoAcid=="L265P, L265P")]<-"MYD88.L265P"
+  casemuts<-casemuts[which(casemuts$aminoAcid!="S219C, S219C, S219C, S219C" & casemuts$aminoAcid!="M232T, M232T" & casemuts$aminoAcid!="0.999, 0.999" & casemuts$aminoAcid!="S251N, S243N, S251N, S243N"),]
+  casemuts[which(casemuts$gene.name=="MYD88" & casemuts$chromosome==""),"gene.name"]<-"MYD88.L265P"
+ casemuts[which(casemuts$gene.name=="MYD88.L265P" & casemuts$chromosome==""),1:20]<-ifelse(casemuts[which(casemuts$gene.name=="MYD88.L265P" & casemuts$chromosome!=""),1:20]!=0,1,0)
+  casem<- casemuts[which(casemuts$chromosome==""),]
+ mutationsToGather[which(mutationsToGather=="MYD88")]<-"MYD88.L265P"
+  dat<-casem[casem$gene.name%in%mutationsToGather,]
+   ### 
+   for(i in mutationsToGather){
+  key[,i]<-0
+ key[match(colnames(dat)[which(dat[dat$gene.name==i,]==1)],key$id),i]<-1
+   }
+  write.csv(key,file="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-mutation-analysis/Mutational.CNV.categorical.table.csv")
+  ## append to the clinical sheet
+  clinic2<-clinic[,!colnames(clinic)%in%mutationsToGather]
+ clinic2<-left_join(clinic2,key[,c("MB",mutationsToGather)],by="MB")
+  for(i in mutationsToGather){
+  clinic2[which(is.na(clinic2[,i])), i]<-0
+  }
+ ##add the factor to control for replicates
+  replicate<-model.matrix(~0+clinic2$MB)
+  replicate<-replicate[,which(colSums(replicate)>1)]  
+ colnames(replicate)<-substring(colnames(replicate),11)
+  clinic2<-data.frame(clinic2,replicate)
+ clinic2$WES.avail<-FALSE
+  clinic2$WES.avail[match(key$MB,clinic2$MB)]<-TRUE
+ clinic2$Case_ID<-paste0("Case_",clinic2$Col1)
+  return(clinic2)
+
+}
+
+
+ ## test for enriched populations.
+ abundanceTest<-function(p=NULL,x=NULL,y=NULL){
+  myForm<-formula(paste0(p,"~0+",y))
+
+ fit<-lm(myForm,x)
+ myInt<-confint(fit)%>%data.frame
+  myInt<-cbind(myInt,coef(fit))
+  myInt$phenotype<-p
+  diffit<-lm(as.formula(paste0(p,"~",y)),x)%>%summary%>%coef
+  myInt$REF.vs.CR.p.value<-diffit[2,"Pr(>|t|)"]
+  return(myInt)
+  } 
+```
+
+### Phenotype calling in DLBCL
+This loads the original experimental data, performs min-max normalization, and concatenates the clinical data.
+```{r calls, eval=TRUE}
+  library(Rphenograph)
+
+##create full random network all ROI.
+# source("~/Documents/imageAnalysis/Ansell/cluster-phenograph-analysis/clusterFunctions.R")
+#  load("~/Documents/imageAnalysis/DLBCL/monirath/myData/final-scripts/Figure-MasterKey/supporting-data-back/ERIK.dlbcl.RData")
+ load("C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/monirath/myData/supporting-data-back/ERIK.dlbcl.RData") 
+
+  #clinic<-read.csv("~/DLBCL/clinicalDataFinal.csv",header=TRUE,sep="\t") 
+ # clinic<-read.csv("~/DLBCL/clinicalDataRevisedFinal.csv",header=TRUE,sep=",") 
+  # clinic<-read.csv("~/Documents/imageAnalysis/DLBCL/monirath/myData/USC_CGI_DLBCL_Data_Final.csv",header=T)
+  clinic<-read.csv("C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/monirath/myData/USC_CGI_DLBCL_Data_Final.csv")
+  
+  lineage_markers<-c( "Cell_BCL2",
+                       "Cell_BCL6",
+                       "Cell_CD20",
+                       "Cell_CD206",
+                       "Cell_CD3",
+                       "Cell_CD30",
+                       "Cell_CD31",
+                       "Cell_CD4",
+                       "Cell_CD45RA",
+                       "Cell_CD45RO",
+                       "Cell_CD68" ,
+                       "Cell_CD8",
+                       "Cell_EphrinB2",
+                       "Cell_FOXP3",
+                       "Cell_HLADR" )
+   induc<-c("Cell_C",
+            "Cell_CCR4",
+            "Cell_CD134",
+            "Cell_CXCR3",
+            "Cell_Granzym",
+            "Cell_ICOS",
+            "Cell_Ki67",
+            "Cell_Lag3",
+            "Cell_PD1",
+            "Cell_PDL1",
+            "Cell_PDL2",
+            "Cell_Tbet",
+            "Cell_Tim3",
+            "Cell_Vimentin",
+            "Cell_Vista",
+            "Cell_p")
+		#"Cell_DNA",
+		#"Cell_DNA2")
+   
+
+  dlbcl$uniqueLabel<-paste0(dlbcl$ROIID,"_",dlbcl$CellId)
+ ## these ROIs were not in the data sheet.
+  missingSurv<-c("3978","3972", "3979" , "39792", "4070","4071","4187")
+  dlbcl<-dlbcl[!dlbcl$ROIID%in%missingSurv,]
+  dlbcl<-dlbcl[which(dlbcl$ROIID!="3972"),]
+   dlbcl$ROIID[which(dlbcl$ROIID=="39722")]<-"3972"
+  dlbcl$uniqueLabel<-paste0(dlbcl$ROIID,"_",dlbcl$CellId)
+  dlbcl$case<-paste0("Case_",clinic$X[match(dlbcl$ROIID,clinic$Run.ID)])
+
+ 
+   dn<-dlbcl[,c(lineage_markers,induc)]
+   adn<-dn/10000
+   adn<-asinh(adn)
+ 
+  #dn4<-adn/apply(adn,2,max)
+   full.dn4<-apply(adn,2,function(x) (x-min(x))/max(x))
+   full.dn4<-data.frame(full.dn4)
+   full.dn4$ROIID<-dlbcl$ROIID
+   full.dn4$CellId<-dlbcl$CellId
+   full.dn4$uniqueLabel<-paste0(full.dn4$ROIID,"_",full.dn4$CellId)
+   all(full.dn4$uniqueLabel==dlbcl$uniqueLabel)
+   full.dn4$X_position<-dlbcl$X_position
+   full.dn4$Y_position<-dlbcl$Y_position
+   full.dn4$cell.type.new<-dlbcl$cell.type.new
+   full.dn4$case<-dlbcl$case
+    full.dn4$response<-clinic$Response.category[match(full.dn4$ROIID,clinic$Run.ID)]
+  full.dn4$replicate.number<-"first"
+   full.dn4$replicate.number[full.dn4$ROIID%in%c("3971","3974","3969","3977","4193","3969","4185","4186","4184")]<-"second"
+   targs<-c(lineage_markers,induc)
+   full.dn4$Cell_CCR4.Tim3.PDL1<-full.dn4$Cell_CCR4*full.dn4$Cell_Tim3*full.dn4$Cell_PDL1
+   full.dn4$Cell_CXCR3.Tbet<-full.dn4$Cell_CXCR3*full.dn4$Cell_Tbet
+   full.dn4$Cell_Lag3.PD1<-full.dn4$Cell_Lag3*full.dn4$Cell_PD1
+    full.dn4$Cell_Tim3.PD1<-full.dn4$Cell_Tim3*full.dn4$Cell_PD1
+
+  ### add treatment info
+  full.dn4$treatment.status<-clinic$chemo[match(full.dn4$ROIID,clinic$Run.ID)]
+  full.dn4$treatment.status<-clinic$chemo[match(full.dn4$ROIID,clinic$Run.ID)]
+  full.dn4$MYC.Gain<-clinic$MYC.Gain[match(full.dn4$ROIID,clinic$Run.ID)]
+  full.dn4$X9p24.Status<-clinic$X9p24.Status[match(full.dn4$ROIID,clinic$Run.ID)]
+  
+   ##BCL2 is associated with C3 (Chapuy)
+   full.dn4$bcl2<-clinic$bcl2[match(full.dn4$ROIID,clinic$Run.ID)]
+   full.dn4$bcl6<-clinic$bcl6[match(full.dn4$ROIID,clinic$Run.ID)]
+  ##survival
+    full.dn4$os<-clinic$os[match(full.dn4$ROIID,clinic$Run.ID)]
+    full.dn4$os_d<-clinic$os_d[match(full.dn4$ROIID,clinic$Run.ID)]
+    full.dn4$phenograph_cluster_meta<-dlbcl$phenograph_cluster_meta[match(full.dn4$uniqueLabel,dlbcl$uniqueLabel)]
+ ##add COO
+   full.dn4$COO<-clinic$Cell.of.origin..HANS.[match(full.dn4$ROIID,clinic$Run.ID)]
+  
+   ###add in the mutational cluster info
+  #mut<-read.csv("~/Documents/imageAnalysis/DLBCL/monirath/myData/mutational-genomic-table/clinical.table.morphological.cluster.information.csv")
+  mut<-read.csv("C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/monirath/myData/mutational-genomic-table/clinical.table.morphological.cluster.information.csv")
+   
+    full.dn4$Mutation.C1<-mut$Morphological.Cluster1[match(full.dn4$ROIID,mut$Run.ID)]
+    full.dn4$Mutation.C2<-mut$Morphological.Cluster2[match(full.dn4$ROIID,mut$Run.ID)]
+      full.dn4$Mutation.C3<-mut$Morphological.Cluster3[match(full.dn4$ROIID,mut$Run.ID)]
+    full.dn4$Mutation.C4<-mut$Morphological.Cluster4[match(full.dn4$ROIID,mut$Run.ID)]
+    full.dn4$Mutation.C5<-mut$Morphological.Cluster5[match(full.dn4$ROIID,mut$Run.ID)] 
+
+
+      plot_clustering_heatmap_wrapper(expr=full.dn4[,c(lineage_markers[c(3,5:12,14)],"Cell_BCL2","Cell_Ki67")], 
+  cell_clustering=full.dn4[,"phenograph_cluster_meta"], cluster_merging = NULL,useMedians=TRUE)
+
+
+
+
+ #  savePlot(file="original.phenotype.MC.png")
+   anno<-data.frame("1"="Endothelial",
+		"2"="CD8",
+		"3"="CD4",
+		"4"="Tumor",
+		"5"="CD8",
+		"6"="CD4",
+		"7"="Treg",
+		"8"="Macrophages",
+		"9"="Tumor",
+		"10"="Tumor",
+		"11"="CD4",
+		"12"="Tumor",
+		"13"="Tumor",
+		"14"="Tumor")
+  anno<-as.data.frame(t(anno))
+  anno$cluster<-rownames(anno)
+
+
+
+```
+
+
+
+### Identifying sub-populations
+ The clustering can be slow for large data sets.
+```{r DLBCLsubType,eval=FALSE}
+   full.dn4$subType<-as.character(full.dn4$cell.type.new)
+     full.dn4$subType.correction<-as.character(full.dn4$cell.type.new)
+ full.dn4$subType.reassignedLabel<-as.character(full.dn4$subType)
+
+
+   for (i in unique(as.character(full.dn4$cell.type.new))){
+    ROI=data.frame(subset(full.dn4,full.dn4$subType==i))
+      set.seed(42)
+    graph<- Rphenograph(ROI[,c(lineage_markers,induc)], k = 50)
+    phenograph_cluster<- factor(membership(graph[[2]]))
+   full.dn4$subType[match(ROI$uniqueLabel,full.dn4$uniqueLabel)]=paste0(i,"_",phenograph_cluster)
+  
+ }
+ 
+  ##plot the sub-phenographs co-expression.
+  plot_clustering_heatmap_wrapper(expr=full.dn4[which(full.dn4$cell.type.new=="Tumor"),c(lineage_markers,induc)], 
+  cell_clustering=full.dn4[which(full.dn4$cell.type.new=="Tumor"),"subType"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=NULL)
+  savePlot(file="full.allROI.Tumor.subTypes.png")
+  
+  ## CD8 reassign
+   full.dn4$subType.correction[which(full.dn4$subType=="Tumor_28")]<-"Tcyt"
+ full.dn4$subType.reassignedLabel[which(full.dn4$subType=="Tumor_28")]<-"Tumor_28.Reassigned.CD8"
+   ##MAC re-assign
+   full.dn4$subType.correction[which(full.dn4$subType=="Tumor_1")]<-"Macrophages"
+   full.dn4$subType.correction[which(full.dn4$subType=="Tumor_27")]<-"Macrophages"
+   full.dn4$subType.correction[which(full.dn4$subType=="Tumor_34")]<-"Macrophages"
+ 
+  full.dn4$subType.reassignedLabel[which(full.dn4$subType=="Tumor_1")]<-"Tumor_1.Reassigned.MAC"
+
+ full.dn4$subType.reassignedLabel[which(full.dn4$subType=="Tumor_27")]<-"Tumor_27.Reassigned.MAC"
+
+ full.dn4$subType.reassignedLabel[which(full.dn4$subType=="Tumor_34")]<-"Tumor_34.Reassigned.MAC"
+
+
+
+  ##CD4 re-assign
+    full.dn4$subType.correction[which(full.dn4$subType=="Tumor_10")]<-"Th"
+   full.dn4$subType.correction[which(full.dn4$subType=="Tumor_41")]<-"Th"
+  full.dn4$subType.reassignedLabel[which(full.dn4$subType=="Tumor_10")]<-"Tumor_10.Reassigned.CD4"
+ full.dn4$subType.reassignedLabel[which(full.dn4$subType=="Tumor_41")]<-"Tumor_41.Reassigned.CD4"
+
+    #Endo re-assign
+   full.dn4$subType.correction[which(full.dn4$subType=="Tumor_25")]<-"Endothelial"
+ full.dn4$subType.reassignedLabel[which(full.dn4$subType=="Tumor_25")]<-"Tumor_25.Reassigned.Endo"
+
+ ##Th re-assign
+  full.dn4$subType.correction[which(full.dn4$subType=="Tumor_20")]<-"Th"
+ full.dn4$subType.reassignedLabel[which(full.dn4$subType=="Tumor_20")]<-"Tumor_20.Reassigned.CD4"
+
+  full.dn4$Cell_DNA<-0.5
+  full.dn4$Cell_DNA2<-0.5
+  full.dn4$Cell_DNA[match(dna$uniqueLabel,full.dn4$uniqueLabel)]<-dna$Cell_DNA
+  full.dn4$Cell_DNA2[match(dna$uniqueLabel,full.dn4$uniqueLabel)]<-dna$Cell_DNA2
+
+  a<-ggplot(full.dn4,aes(x=subType.correction,y=Cell_DNA))+geom_boxplot()+theme_bw(base_size=14)
+  b<-ggplot(full.dn4,aes(x=subType.correction,y=Cell_DNA2))+geom_boxplot()+theme_bw(base_size=14)
+  library(gridExtra) 
+ grid.arrange(a,b)
+ # ggsave("DNA.channel.distribution.png")
+ 
+```
+ 
+### Examine the corrected sub-populations
+After curating the sub-clusters assignments, we show the corrected/final sets.  We load the saved objects.
+```{r DLBCLcorrected,eval=TRUE}
+ 
+ #load(file="~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.appended.un.filtered.RData")
+ load(file="C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/monirath/myData/revision-comments-11-6/full.dn4.subType.corrected.mutation.tsne.CD20dim.appended.un.filtered.RData")
+
+
+ ##plot the tumor correction
+    plot_clustering_heatmap_wrapper(expr=full.dn4[which(full.dn4$cell.type.new=="Tumor"),c(lineage_markers,induc)], 
+  cell_clustering=full.dn4[which(full.dn4$cell.type.new=="Tumor"),"subType.correction"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=NULL)
+ # savePlot(file="full.allROI.Tumor.subType.correction.png")
+
+   #shows the tumor population re-assignment proportions.
+   plot_clustering_heatmap_wrapper(expr=full.dn4[which(full.dn4$cell.type.new=="Tumor"),c(lineage_markers,induc)], 
+  cell_clustering=full.dn4[which(full.dn4$cell.type.new=="Tumor"),"subType.reassignedLabel"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=NULL)
+ # savePlot(file="full.allROI.Tumor.subType.reassignedLabel.png")
+
+```
+
+
+### Identifying TME sub-populations
+ Sub-classify each TME population which is very slow.
+```{r DLBCLTMEsubType,eval=FALSE}
+   
+########### META-CLUSTER EACH POPULATION ############################
+ ##meta-cluster the tumor population
+   full.dn42<-metaClusterPhenotype(dn4=full.dn4,phenotype="Tumor",myPheno="subType.correction",markers=c(lineage_markers,induc))
+  # save(full.dn42,file="full.dn42.tumor.subMeta.RData")
+ 
+  cd8.subMeta<-metaClusterPhenotype(dn4=full.dn4,phenotype="Tcyt",myPheno="subType.correction",markers=c(lineage_markers,induc)) 
+   #  save( cd8.subMeta,file=" cd8.subMeta.cd8.subMeta.RData")
+
+  th.subMeta<-metaClusterPhenotype(dn4=full.dn4,phenotype="Th",myPheno="subType.correction",markers=c(lineage_markers,induc))
+   # save(th.subMeta,file="th.subMeta.th.subMeta.RData") 
+ 
+  treg.subMeta<-metaClusterPhenotype(dn4=full.dn4,phenotype="Treg",myPheno="subType.correction",markers=c(lineage_markers,induc))
+   # save(treg.subMeta,file="treg.subMeta.treg.subMeta.RData") 
+
+
+ mac.subMeta<-metaClusterPhenotype(dn4=full.dn4,phenotype="Macrophages",myPheno="subType.correction",markers=c(lineage_markers,induc))
+   # save(mac.subMeta,file="mac.subMeta.mac.subMeta.RData") 
+
+ endo.subMeta<-metaClusterPhenotype(dn4=full.dn4,phenotype="Endothelial",myPheno="subType.correction",markers=c(lineage_markers,induc))
+   # save(endo.subMeta,file="endo.subMeta.endo.subMeta.RData") 
+
+ #### assemble the submeta.
+ full.dn4$Tumor_subMeta[match(full.dn42$uniqueLabel,full.dn4$uniqueLabel)]<-full.dn42$Tumor_subMeta
+ full.dn4$Tumor_subphenograph_cluster_meta[match(full.dn42$uniqueLabel,full.dn4$uniqueLabel)]<-full.dn42$Tumor_subphenograph_cluster_meta
+  
+  x<-full.dn4[which(full.dn4$cell.type.new=="Tumor"),c(lineage_markers,induc)]
+  id<-full.dn4[which(full.dn4$cell.type.new=="Tumor" & !is.na(full.dn4$Tumor_subphenograph_cluster_meta)),"uniqueLabel"]
+
+  plot_clustering_heatmap_wrapper(expr=full.dn4[match(id,full.dn4$uniqueLabel),c(lineage_markers,induc)], 
+  cell_clustering=full.dn4[match(id,full.dn4$uniqueLabel),"Tumor_subphenograph_cluster_meta"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=NULL)
+ # savePlot(file="full.allROI.Tumor.subType.subMetaCluster.png")
+```   
+
+
+### Examine TME sub-populations
+ Examine the sub-classified TME population. This shows the 14 meta-clusters and their expression after careful empirical re-assignments.  
+```{r DLBCLTMEplot,eval=TRUE}
+   
+
+ ####  CD8
+ load("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/subcluster-data/cd8.subMeta.cd8.subMeta.RData")
+ full.dn4$Tcyt_subMeta[match(cd8.subMeta$uniqueLabel,full.dn4$uniqueLabel)]<-cd8.subMeta$Tcyt_subMeta
+ full.dn4$Tcyt_subphenograph_cluster_meta[match(cd8.subMeta$uniqueLabel,full.dn4$uniqueLabel)]<-cd8.subMeta$Tcyt_subphenograph_cluster_meta
+  
+  id<-full.dn4[which(full.dn4$cell.type.new=="Tcyt" & !is.na(full.dn4$Tcyt_subphenograph_cluster_meta)),"uniqueLabel"]
+
+  plot_clustering_heatmap_wrapper(expr=full.dn4[match(id,full.dn4$uniqueLabel),c(lineage_markers,induc)], 
+  cell_clustering=full.dn4[match(id,full.dn4$uniqueLabel),"Tcyt_subphenograph_cluster_meta"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=NULL)
+  #savePlot(file="full.allROI.CD8.subType.subMetaCluster.png")
+   
+
+ ## CD4 
+ load("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/subcluster-data/th.subMeta.th.subMeta.RData")
+ full.dn4$Th_subMeta[match(th.subMeta$uniqueLabel,full.dn4$uniqueLabel)]<-th.subMeta$Th_subMeta
+  full.dn4$Th_subphenograph_cluster_meta[match(th.subMeta$uniqueLabel,full.dn4$uniqueLabel)]<-th.subMeta$Th_subphenograph_cluster_meta
+  
+  id<-full.dn4[which(full.dn4$cell.type.new=="Th" & !is.na(full.dn4$Th_subphenograph_cluster_meta)),"uniqueLabel"]
+
+  plot_clustering_heatmap_wrapper(expr=full.dn4[match(id,full.dn4$uniqueLabel),c(lineage_markers,induc)], 
+  cell_clustering=full.dn4[match(id,full.dn4$uniqueLabel),"Th_subphenograph_cluster_meta"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=NULL)
+ # savePlot(file="full.allROI.CD4.subType.subMetaCluster.png")
+   
+
+  ### Treg
+  load("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/subcluster-data/treg.subMeta.treg.subMeta.RData")
+ full.dn4$Treg_subMeta[match(treg.subMeta$uniqueLabel,full.dn4$uniqueLabel)]<-treg.subMeta$Treg_subMeta
+  full.dn4$Treg_subphenograph_cluster_meta[match(treg.subMeta$uniqueLabel,full.dn4$uniqueLabel)]<-treg.subMeta$Treg_subphenograph_cluster_meta
+  
+  id<-full.dn4[which(full.dn4$cell.type.new=="Treg" & !is.na(full.dn4$Treg_subphenograph_cluster_meta)),"uniqueLabel"]
+
+  plot_clustering_heatmap_wrapper(expr=full.dn4[match(id,full.dn4$uniqueLabel),c(lineage_markers,induc)], 
+  cell_clustering=full.dn4[match(id,full.dn4$uniqueLabel),"Treg_subphenograph_cluster_meta"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=NULL)
+ # savePlot(file="full.allROI.treg.subType.subMetaCluster.png")
+   
+ ## MAC
+  load("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/subcluster-data/mac.subMeta.mac.subMeta.RData")
+ full.dn4$Macrophages_subMeta[match(mac.subMeta$uniqueLabel,full.dn4$uniqueLabel)]<-mac.subMeta$Macrophages_subMeta
+  full.dn4$Macrophages_subphenograph_cluster_meta[match(mac.subMeta$uniqueLabel,full.dn4$uniqueLabel)]<-mac.subMeta$Macrophages_subphenograph_cluster_meta
+  
+  id<-full.dn4[which(full.dn4$cell.type.new=="Macrophages" & !is.na(full.dn4$Macrophages_subphenograph_cluster_meta)),"uniqueLabel"]
+
+  plot_clustering_heatmap_wrapper(expr=full.dn4[match(id,full.dn4$uniqueLabel),c(lineage_markers,induc)], 
+  cell_clustering=full.dn4[match(id,full.dn4$uniqueLabel),"Macrophages_subphenograph_cluster_meta"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=NULL)
+ # savePlot(file="full.allROI.mac.subType.subMetaCluster.png")
+   
+
+  ## endo
+  load("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/subcluster-data/endo.subMeta.endo.subMeta.RData")
+ full.dn4$Endothelial_subMeta[match(endo.subMeta$uniqueLabel,full.dn4$uniqueLabel)]<-endo.subMeta$Endothelial_subMeta
+  full.dn4$Endothelial_subphenograph_cluster_meta[match(endo.subMeta$uniqueLabel,full.dn4$uniqueLabel)]<-endo.subMeta$Endothelial_subphenograph_cluster_meta
+  
+  id<-full.dn4[which(full.dn4$cell.type.new=="Endothelial" & !is.na(full.dn4$Endothelial_subphenograph_cluster_meta)),"uniqueLabel"]
+
+  plot_clustering_heatmap_wrapper(expr=full.dn4[match(id,full.dn4$uniqueLabel),c(lineage_markers,induc)], 
+  cell_clustering=full.dn4[match(id,full.dn4$uniqueLabel),"Endothelial_subphenograph_cluster_meta"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=NULL)
+ # savePlot(file="full.allROI.endo.subType.subMetaCluster.png")
+   
+# full.dn4$Cell_DNA=0.4
+# full.dn4$Cell_DNA2=0.4 
+# full.dn4$Cell_DNA[match(dna$uniqueLabel,full.dn4$uniqueLabel)]<-dna$Cell_DNA
+ # full.dn4$Cell_DNA2[match(dna$uniqueLabel,full.dn4$uniqueLabel)]<-dna$Cell_DNA2
+
+ ### add morphology
+# full.dn4$Area<-dlbcl$Area[match(full.dn4$uniqueLabel,dlbcl$uniqueLabel)]
+#  full.dn4$Eccentricity<-dlbcl$Eccentricity[match(full.dn4$uniqueLabel,dlbcl$uniqueLabel)]
+ # full.dn4$Solidity<-dlbcl$Solidity[match(full.dn4$uniqueLabel,dlbcl$uniqueLabel)]
+  #  full.dn4$Perimeter<-dlbcl$Perimeter[match(full.dn4$uniqueLabel,dlbcl$uniqueLabel)]
+   #  full.dn4$Percent_Touching<-dlbcl$Percent_Touching[match(full.dn4$uniqueLabel,dlbcl$uniqueLabel)]
+   # full.dn4$Number_Neighbors<-dlbcl$Number_Neighbors[match(full.dn4$uniqueLabel,dlbcl$uniqueLabel)]
+
+   #full.dn4$DNA.Area<-full.dn4$Cell_DNA/full.dn4$Area
+
+
+ # save(full.dn4,file="~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.RData")
+
+ ##### end of the meta-clustering of the sub-types.
+
+
+ #### global sub-types.
+
+ ## Tcyt
+ plot_clustering_heatmap_wrapper(expr=full.dn4[which(full.dn4$cell.type.new=="Tcyt"),c(lineage_markers,induc)], 
+  cell_clustering=full.dn4[which(full.dn4$cell.type.new=="Tcyt"),"subType"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=NULL)
+ # savePlot(file="full.allROI.CD8.subTypes.png")
+  
+
+ ##Th
+ plot_clustering_heatmap_wrapper(expr=full.dn4[which(full.dn4$cell.type.new=="Th"),c(lineage_markers,induc)], 
+  cell_clustering=full.dn4[which(full.dn4$cell.type.new=="Th"),"subType"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=NULL)
+ # savePlot(file="full.allROI.CD4.subTypes.png")
+
+ ##Th_12 has FOXP3+ 
+     full.dn4$subType.correction[which(full.dn4$subType=="Th_12")]<-"Treg"
+  full.dn4$subType.reassignedLabel[which(full.dn4$subType=="Th_12")]<-"Th_12.Reassigned.Treg"
+
+      full.dn4$subType.correction[which(full.dn4$subType=="Th_21")]<-"Treg"
+full.dn4$subType.reassignedLabel[which(full.dn4$subType=="Th_21")]<-"Th_21.Reassigned.Treg"
+
+     full.dn4$subType.correction[which(full.dn4$subType=="Th_9")]<-"Tcyt"
+full.dn4$subType.reassignedLabel[which(full.dn4$subType=="Th_9")]<-"Th_9.Reassigned.CD8"
+
+ ##plot the corrected
+   plot_clustering_heatmap_wrapper(expr=full.dn4[which(full.dn4$cell.type.new=="Th"),c(lineage_markers,induc)], 
+  cell_clustering=full.dn4[which(full.dn4$cell.type.new=="Th"),"subType.reassignedLabel"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=NULL)
+ # savePlot(file="full.allROI.Th.subType.reassignedLabel.png")
+  
+
+
+
+
+ #MAC
+  plot_clustering_heatmap_wrapper(expr=full.dn4[which(full.dn4$cell.type.new=="Macrophages"),c(lineage_markers,induc)], 
+  cell_clustering=full.dn4[which(full.dn4$cell.type.new=="Macrophages"),"subType"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=NULL)
+ # savePlot(file="full.allROI.MAC.subTypes.png")
+
+
+ ##Endo
+   plot_clustering_heatmap_wrapper(expr=full.dn4[which(full.dn4$cell.type.new=="Endothelial"),c(lineage_markers,induc)], 
+  cell_clustering=full.dn4[which(full.dn4$cell.type.new=="Endothelial"),"subType"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=NULL)
+ # savePlot(file="full.allROI.Endo.subTypes.png")
+##Treg
+  plot_clustering_heatmap_wrapper(expr=full.dn4[which(full.dn4$cell.type.new=="Treg"),c(lineage_markers,induc)], 
+  cell_clustering=full.dn4[which(full.dn4$cell.type.new=="Treg"),"subType"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=NULL)
+ # savePlot(file="full.allROI.treg.subTypes.png")
+
+ ##plot the heatmap of corrected
+  plot_clustering_heatmap_wrapper(expr=full.dn4[,c(lineage_markers,induc)], 
+  cell_clustering=full.dn4[,"subType.correction"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=NULL)
+ # savePlot(file="full.allROI.corrected.subTypes.png")
+
+ melts<-reshape2::melt(full.dn4[,c("Cell_CD20","Cell_CD8","Cell_CD68","Cell_CD31","Cell_FOXP3","Cell_CD4","Cell_CD3","subType.correction")])
+  library(ggplot2)
+ ggplot(melts, aes(x=subType.correction,y=value))+geom_boxplot()+facet_wrap(~variable)+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ #ggsave("boxplot.corrected.phenotype.png")
+
+
+  color_clusters <- c("#DC050C", "#FB8072", "#1965B0", "#7BAFDE", "#882E72", 
+  "#B17BA6", "#FF7F00", "#FDB462", "#E7298A", "#E78AC3", 
+  "#33A02C", "#B2DF8A", "#55A1B1", "#8DD3C7", "#A6761D", 
+  "#E6AB02", "#7570B3", "#BEAED4", "#666666", "#999999", 
+  "#aa8282", "#d4b7b7", "#8600bf", "#ba5ce3", "#808000", 
+  "#aeae5c", "#1e90ff", "#00bfff", "#56ff0d", "#ffff00")
+
+   
+ ###plot the meta-cluster heatmap.
+  metaData<-full.dn4[,c(lineage_markers,induc)]
+  colnames(metaData)<-gsub("Cell_","",colnames(metaData))
+  metaData<-metaData[,c("CD20","CD4","CD3","CD8","CD68","CD31","FOXP3")]
+
+ 
+
+ ##patient distributions
+  ##meta cluster key
+  annotation_row<-data.frame(cluster=seq(1,14))
+  annotation_row$cluster<-factor(annotation_row$cluster)
+  annotation_row$colors <- color_clusters[1:nlevels(annotation_row$cluster)]
+
+
+
+      plot_clustering_heatmap_wrapper(expr=metaData, 
+  cell_clustering=full.dn4[,"phenograph_cluster_meta"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=annotation_row$colors)
+ # savePlot(file="full.allROI.metaCluster.png")
+
+  ## FIX ME: show the adjusted meta-cluster populations.
+ table(full.dn4$phenograph_cluster_meta,full.dn4$subType.correction)
+ full.dn4$phenograph_cluster_meta_correction<-full.dn4$phenograph_cluster_meta
+
+ ## we see that tumor cluster 9 has low CD20 expression and re-assign this meta-cluster to other components.
+ ## within MC9 assign to endo
+ id<-which(full.dn4$phenograph_cluster_meta==9 & full.dn4$subType.correction=="Endothelial")
+ full.dn4$phenograph_cluster_meta_correction[id]<-1
+ ## within MC9 assign to mac
+  id<-which(full.dn4$phenograph_cluster_meta==9 & full.dn4$subType.correction=="Macrophages")
+ full.dn4$phenograph_cluster_meta_correction[id]<-8
+  id<-which(full.dn4$phenograph_cluster_meta==9 & full.dn4$subType.correction=="Tcyt")
+ full.dn4$phenograph_cluster_meta_correction[id]<-2
+  id<-which(full.dn4$phenograph_cluster_meta==9 & full.dn4$subType.correction=="Th")
+ full.dn4$phenograph_cluster_meta_correction[id]<-3
+
+
+```
+
+
+### the full DLBCL data without any filtering complete re-assignments.
+ We have the full complete DLBCL data, but drop ROIs with missing clinical information. 
+```{r,eval=TRUE}
+
+#load("~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.RData")
+load(file="~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.appended.un.filtered.RData")
+
+
+
+ ##matches the dimensions. no filtering. just re-assignments.
+  dim(dlbcl[match(full.dn4$uniqueLabel,dlbcl$uniqueLabel),])
+  missingRoi<-dlbcl$uniqueLabel[!dlbcl$uniqueLabel%in%full.dn4$uniqueLabel]
+ droppedRoi<-data.frame(label=missingRoi,ROI=dlbcl$ROIID[match(missingRoi,dlbcl$uniqueLabel)])
+ ## removed ROI: 3978, 4187, 4071, 4070, 397992, 3979, and 3978 becuase they did not have clinical information.
+ ## ROI: 39722 (N=10,020) was renamed to 3972, and the 1st pass of 3972 (N=2697) was omitted.
+ nrow(dlbcl[!dlbcl$ROIID%in%missingSurv,])+10020
+ ## total dropping after only ROI is 692,463
+ 
+```
+
+
+### Analysis for Figure 1
+ Tumor cluster 9 is dim for CD20, but negative for other markers and retained.
+```{r Figure1, eval=TRUE}
+
+  set.seed(1234)
+  table(full.dn4$phenograph_cluster_meta,full.dn4$cell.type.new)
+    
+
+  lineage_markers<-c( "Cell_BCL2",
+                       "Cell_BCL6",
+                       "Cell_CD20",
+                       "Cell_CD206",
+                       "Cell_CD3",
+                       "Cell_CD30",
+                       "Cell_CD31",
+                       "Cell_CD4",
+                       "Cell_CD45RA",
+                       "Cell_CD45RO",
+                       "Cell_CD68" ,
+                       "Cell_CD8",
+                       "Cell_EphrinB2",
+                       "Cell_FOXP3",
+                       "Cell_HLADR" )
+   induc<-c("Cell_C",
+            "Cell_CCR4",
+            "Cell_CD134",
+            "Cell_CXCR3",
+            "Cell_Granzym",
+            "Cell_ICOS",
+            "Cell_Ki67",
+            "Cell_Lag3",
+            "Cell_PD1",
+            "Cell_PDL1",
+            "Cell_PDL2",
+            "Cell_Tbet",
+            "Cell_Tim3",
+            "Cell_Vimentin",
+            "Cell_Vista",
+            "Cell_p",
+	"Area.norm",
+	"Eccentricity.norm",
+	"Solidity.norm",
+	"Perimeter.norm",
+	"Percent_Touching.norm",
+	"Number_Neighbors.norm")
+
+ ## full cohort meta-cluster
+  plot_clustering_heatmap_wrapper(expr=full.dn4[,c(lineage_markers)], 
+  cell_clustering=full.dn4[,"phenograph_cluster_meta"],
+  useMedians=TRUE,
+  useQuantiles=FALSE,
+  color_clusters=NULL)
+
+  anno<-data.frame("1"="Endothelial",
+		"2"="CD8",
+		"3"="CD4",
+		"4"="Tumor",
+		"5"="CD8",
+		"6"="CD4",
+		"7"="Treg",
+		"8"="Macrophages",
+		"9"="Tumor",
+		"10"="Tumor",
+		"11"="CD4",
+		"12"="Tumor",
+		"13"="Tumor",
+		"14"="Tumor")
+  anno<-as.data.frame(t(anno))
+  anno$cluster<-rownames(anno)
+   anno$cluster<-gsub("X","",anno$cluster)
+
+
+ ## table of re-assigned labels.
+ #table(full.dn4$subType.reassignedLabel)
+
+```
+
+
+### Meta-cluster heatmap of primary phenotypes (Revision 11-20)
+* To study phenotypes we have the full cohort, but could alternatively remove the dim CD20 (ambiguous) tumor cells for phenotype studies only.
+* We plot the heatmap of all clusters, including the dim CD20 (MC9) population, and redo Figure 1 A which was a tSNE to a UMAP.
+* This has a revision of 10-15 which includes the cartoon plotting, and UMAP for Figure 1A replacement.
+* we include a t-test for percent-touching of the CD8.
+```{r, eval=TRUE}
+ #load(file="~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.appended.un.filtered.RData")
+ load(file="C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/monirath/myData/revision-comments-11-6/full.dn4.subType.corrected.mutation.tsne.CD20dim.appended.un.filtered.RData")
+
+ ErikMeta=full.dn4[,
+	c("Cell_CD20","Cell_CD3","Cell_CD4","Cell_CD8","Cell_CD68","Cell_CD31","Cell_FOXP3",
+	"ROIID",
+	"phenograph_cluster_meta")] %>% group_by(ROIID,phenograph_cluster_meta) %>% 
+       dplyr::summarise_all(funs(median)) %>%data.frame
+
+# plot_clustering_heatmap_wrapper(expr=ErikMeta[,c("Cell_CD20","Cell_CD3","Cell_CD4","Cell_CD8","Cell_CD68","Cell_CD31","Cell_FOXP3")], 
+#  cell_clustering=ErikMeta[,"phenograph_cluster_meta"],
+#  useMedians=FALSE,
+#  useQuantiles=TRUE,
+#  color_clusters=NULL)
+ ### total proportion of meta-clusters
+  plot_clustering_heatmap_wrapper(expr=full.dn4[,c("Cell_CD20","Cell_CD3","Cell_CD4","Cell_CD8","Cell_CD68","Cell_CD31","Cell_FOXP3")], 
+  cell_clustering=full.dn4[,"phenograph_cluster_meta"],
+  useMedians=FALSE,
+  useQuantiles=TRUE,
+  color_clusters=NULL)
+  
+  
+ #for the phenotype analysis, we did not count the dimCD20 MC9 cluster. annotated.
+  plot_clustering_heatmap_wrapper(expr=full.dn4[which(full.dn4$dimCD20.filtered!='YES'),c("Cell_CD20","Cell_CD3","Cell_CD4","Cell_CD8","Cell_CD68","Cell_CD31","Cell_FOXP3")], 
+  cell_clustering=full.dn4[which(full.dn4$dimCD20.filtered!='YES'),"subType.correction"],
+  useMedians=FALSE,
+  useQuantiles=TRUE,
+  color_clusters=NULL)
+ #savePlot(file="allCells.corrected.png")
+
+#  plot_clustering_heatmap_wrapper(expr=full.dn4[which(full.dn4$immune.status=="immune"),c("Cell_CD20","Cell_CD3","Cell_CD4","Cell_CD8","Cell_CD68","Cell_CD31","Cell_FOXP3")], 
+#  cell_clustering=full.dn4[which(full.dn4$immune.status=="immune"),"subType.correction"],
+#  useMedians=FALSE,
+#  useQuantiles=TRUE,
+#  color_clusters=NULL)
+ #savePlot(file="TME.corrected.png")
+  
+  ## plot the UMAP of the meta-clusters.
+  ErikMeta2=full.dn4[,
+	c(induc,lineage_markers,
+	  "ROIID",
+	   	"phenograph_cluster_meta")] %>% group_by(ROIID,phenograph_cluster_meta) %>% 
+       dplyr::summarise_all(funs(mean)) %>%data.frame
+  
+  percentTouching<-full.dn4[,
+	c('Percent_Touching',
+	  "ROIID",
+	   	"phenograph_cluster_meta")] %>% group_by(ROIID,phenograph_cluster_meta) %>% 
+       dplyr::summarise_all(funs(mean)) %>%data.frame
+  
+  annoColors<-data.frame(ID=seq(1,14),Phenotype=c("Endothelial",
+                                                  "CD8",
+                                                  "CD4",
+                                                  "Tumor",
+                                                  "CD8",
+                                                  "CD4",
+                                                  "TREG",
+                                                  "Macrophage",
+                                                  "Tumor",
+                                                  "Tumor",
+                                                  "CD4",
+                                                  "Tumor",
+                                                  "Tumor",
+                                                  "Tumor"))
+  
+  annoColors$colors<-'grey'
+ annoColors$colors[which(annoColors$Phenotype=='CD4')]<-'blue'
+ annoColors$colors[which(annoColors$Phenotype=='CD8')]<-'green'
+  annoColors$colors[which(annoColors$Phenotype=='Endothelial')]<-'red'
+ annoColors$colors[which(annoColors$Phenotype=='TREG')]<-'purple'
+ annoColors$colors[which(annoColors$Phenotype=='Macrophage')]<-'magenta'
+                                                  
+
+  library(hrbrthemes)
+  library(umap)
+   library(ggplot2)
+  #ErikMeta2<-ErikMeta2[which(ErikMeta2$phenograph_cluster_meta!=9),]
+ set.seed(10192020)
+  mc.umap<-umap((ErikMeta2[,c(-1,-2)]))
+
+  mc.data<-cbind(ErikMeta2,mc.umap$layout)
+  colnames(mc.data)[40:41]<-c("umap_x","umap_y")
+#  ggplot(mc.data,aes(x=umap_x,y=umap_y,color=phenograph_cluster_meta))+geom_point()
+  
+  ggplot(mc.data,aes(x=umap_x,y=umap_y,color=phenograph_cluster_meta))+geom_point()+scale_color_manual(name="Compartment",values=annoColors$colors)+theme_ipsum()+theme(legend.position = "none")+xlab("UMAP(x)")+ylab("UMAP(y)")
+  
+  umapMC<-  ggplot(mc.data,aes(x=umap_x,y=umap_y,color=phenograph_cluster_meta))+geom_point()+scale_color_manual(name="Compartment",values=annoColors$colors)+theme_ipsum()+theme(legend.position = "none")+xlab("UMAP(x)")+ylab("UMAP(y)")
+  save(umapMC,file="C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/blood-revisions-5-1-21/final-figure-revision/Final-figures-Tucker/Figure1/umapFigure1A.RData")
+  ## 
+ mc.data[which(mc.data[mc.data$phenograph_cluster_meta%in%c("2","5"),'umap_x']>0),'Percent_Touching.norm']
+   mc.data[which(mc.data[mc.data$phenograph_cluster_meta%in%c("2","5"),'umap_x']<0),'Percent_Touching.norm']
+ t.test(mc.data[which(mc.data[mc.data$phenograph_cluster_meta%in%c("2","5"),'umap_x']>0),'Percent_Touching.norm'],   mc.data[which(mc.data[mc.data$phenograph_cluster_meta%in%c("2","5"),'umap_x']<0),'Percent_Touching.norm'])  
+   
+  subs<-mc.data[which(mc.data$phenograph_cluster_meta%in%c("2","5","6","11")),]
+  subs[which(subs[,'umap_x']>0),c("ROIID","phenograph_cluster_meta")]
+  
+errors<- subs[which(subs[,'umap_x']>0),c("ROIID","phenograph_cluster_meta")]
+x<-as.data.frame.matrix(table(full.dn4$ROIID,full.dn4$phenograph_cluster_meta))
+errors$count_2<-x[errors$ROIID,'2']
+errors$count_11<-x[errors$ROIID,'11']
+
+errors$count_2.prop<-errors$count_2/sum(x[,'2'])
+errors$count_11.prop<-errors$count_11/sum(x[,'11'])
+
+ error.prop<-errors
+write.csv(error.prop,file="~/Documents/imageAnalysis/DLBCL/revision-rebuttal-10-1/ROI.metacluster.mixture.proportion.csv")
+
+ ## ROIID 4182 and 4190 have the highest 'ambiguity' between CD8 and Tumor
+  ## load shape and plotting the shape file
+ # REVISION 10-15
+ 
+ #load("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/Box-RData/cartoons/cartoon-shapeFiles/final-shapes/4182_spdf-1-23.validation.RData")
+ load("C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/simpleModel-1-14/final-submission-folder/Box-RData/cartoons/cartoon-shapeFiles/final-shapes/4182_spdf-1-23.validation.RData")
+ 
+  color_clusters <- c(#DC050C","#FB8072", "#1965B0", "#7BAFDE", "#882E72", 
+                    "#B17BA6", "#FF7F00", "#FDB462", "#E7298A", "#E78AC3", 
+                     "#33A02C", "#B2DF8A", "#55A1B1", "#8DD3C7", "#A6761D", 
+                     "#E6AB02", "#7570B3", "#BEAED4", "#666666", "#999999", 
+                     "#aa8282", "#d4b7b7", "#8600bf", "#ba5ce3", "#808000", 
+                     "#aeae5c", "#1e90ff", "#00bfff", "#56ff0d", "#ffff00")
+  
+  phenoColors<-data.frame(colors=color_clusters[1:14],phenotype=seq(1,14))
+  
+  plotShape<-function(path="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-shape-objects-revised/final-shapes/",ROI="3964",cols=NULL,full.dn4,compartment=NULL,phenotype=NULL,phenotype.column.toShape=NULL){
+  # sh<-dir("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-shape-objects-revised/final-shapes/")
+    sh<-dir(path)
+  n<-sh[grepl(ROI,sh)]
+  load(paste0(path,n))
+  spdf$cellType2<-sapply(strsplit(as.character(spdf$cellType),"_"),function(x) x[1])
+  mycase<-full.dn4[which(full.dn4$ROIID==ROI),]
+  tumor.id<-mycase$uniqueLabel[which(mycase[,compartment]==phenotype) ]
+  spdf$uniqueLabel<-spdf$id
+  spdf<-left_join(spdf,mycase[,c("uniqueLabel",phenotype.column.toShape)],by="uniqueLabel")
+   spdf$cellType3<-factor(spdf[,phenotype.column.toShape],levels=unique(spdf[,phenotype.column.toShape]))
+ test<- ggplot(spdf,aes(x=long,y=lat,group=id,fill=cellType3)) +
+      geom_polygon( size=0.1,colour="black") +scale_fill_manual(values=cols[match(levels(spdf$cellType3),cols$phenotype),"colors"])+ggtitle(ROI)+theme_bw()
+ 
+  # print(test)
+  return(test)
+  }
+   ## visually check.
+  message(roi)
+  #c4192<-plotShape(path="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-shape-objects-revised/final-shapes/",
+	c4192<-plotShape(path="C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/simpleModel-1-14/final-submission-folder/Box-RData/cartoons/cartoon-shapeFiles/final-shapes/",
+  ROI='4182',
+	cols=phenoColors,
+	full.dn4,
+	compartment="phenograph_cluster_meta",
+	phenotype="2",
+	phenotype.column.toShape="phenograph_cluster_meta")
+  print(c4192)
+
+
+ 
+ 
+ 
+ 
+  
+```
+
+### CD4_1 cartoon image detection
+REVISION 10-21 looking for CD4_1,  3967 (7.03%)
+
+```{r cd41}
+  load(file="C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/monirath/myData/revision-comments-11-6/full.dn4.subType.corrected.mutation.tsne.CD20dim.appended.un.filtered.RData")
+
+# load("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/final-submission-folder/Box-RData/cartoons/cartoon-shapeFiles/final-shapes/3967_spdf-1-23.validation.RData")
+ load("C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/simpleModel-1-14/final-submission-folder/Box-RData/cartoons/cartoon-shapeFiles/final-shapes/3967_spdf-1-23.validation.RData") 
+
+color_clusters <- c(#DC050C","#FB8072", "#1965B0", "#7BAFDE", "#882E72", 
+                    "#B17BA6", "#FF7F00", "#FDB462", "#E7298A", "#E78AC3", 
+                     "#33A02C", "#B2DF8A", "#55A1B1", "#8DD3C7", "#A6761D", 
+                     "#E6AB02", "#7570B3", "#BEAED4", "#666666", "#999999", 
+                     "#aa8282", "#d4b7b7", "#8600bf", "#ba5ce3", "#808000", 
+                     "#aeae5c", "#1e90ff", "#00bfff", "#56ff0d", "#ffff00")
+  
+   roi<-subset(full.dn4,full.dn4$ROIID=='3967')
+
+  phenoColors<-data.frame(colors=color_clusters[1:19],phenotype=as.character(unique(roi$unsup.subcommunity)))
+  phenoColors$colors[grepl("Tumor_",phenoColors$phenotype)]<-'grey'
+  phenoColors$colors[grepl("CD4_1",phenoColors$phenotype)]<-'red'
+    phenoColors$colors[grepl("CD8",phenoColors$phenotype)]<-'green'
+        phenoColors$colors[grepl("TREG_",phenoColors$phenotype)]<-'purple'
+            phenoColors$colors[grepl("Macrophage_",phenoColors$phenotype)]<-'lightpink'
+
+
+
+
+  
+  
+   ## visually check.
+  #c4192<-plotShape(path="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-shape-objects-revised/final-shapes/",
+	c4192<-plotShape(path="C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/simpleModel-1-14/final-submission-folder/Box-RData/cartoons/cartoon-shapeFiles/final-shapes/",
+          ROI='3967',
+	cols=phenoColors,
+	full.dn4,
+	compartment="unsup.subcommunity",
+	phenotype="CD4_1",
+	phenotype.column.toShape="unsup.subcommunity")
+  print(c4192)
+
+
+```
+
+# Render Cartoons Figure 1 C (left side)
+- group sub-clusters by main compartment and color code major
+```{r}
+ load(file="C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/monirath/myData/revision-comments-11-6/full.dn4.subType.corrected.mutation.tsne.CD20dim.appended.un.filtered.RData")
+
+ load("C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/simpleModel-1-14/final-submission-folder/Box-RData/cartoons/cartoon-shapeFiles/final-shapes/3967_spdf-1-23.validation.RData") 
+
+color_clusters <- c(#DC050C","#FB8072", "#1965B0", "#7BAFDE", "#882E72", 
+                    "#B17BA6", "#FF7F00", "#FDB462", "#E7298A", "#E78AC3", 
+                     "#33A02C", "#B2DF8A", "#55A1B1", "#8DD3C7", "#A6761D", 
+                     "#E6AB02", "#7570B3", "#BEAED4", "#666666", "#999999", 
+                     "#aa8282", "#d4b7b7", "#8600bf", "#ba5ce3", "#808000", 
+                     "#aeae5c", "#1e90ff", "#00bfff", "#56ff0d", "#ffff00")
+  
+   roi<-subset(full.dn4,full.dn4$ROIID=='3967')
+
+  phenoColors<-data.frame(colors=color_clusters[1:19],phenotype=as.character(unique(roi$unsup.subcommunity)))
+  phenoColors$colors[grepl("Tumor_",phenoColors$phenotype)]<-'grey'
+  phenoColors$colors[grepl("CD4_1",phenoColors$phenotype)]<-'red'
+    phenoColors$colors[grepl("CD8",phenoColors$phenotype)]<-'green'
+        phenoColors$colors[grepl("TREG_",phenoColors$phenotype)]<-'purple'
+            phenoColors$colors[grepl("Macrophage_",phenoColors$phenotype)]<-'lightpink'
+
+
+  tmeColors<-data.frame(colors=c("magenta","purple","blue","green","red","grey"),
+                        phenotype=c("CD68 Macrophage","FOXP3 T REG","T Helper","T cytotoxic","Endothelial","Tumor"))
+
+  
+  
+   ## visually check case 10
+  #c4192<-plotShape(path="~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/DLBCL-shape-objects-revised/final-shapes/",
+	c10<-plotShape(path="C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/simpleModel-1-14/final-submission-folder/Box-RData/cartoons/cartoon-shapeFiles/final-shapes/",
+          ROI='4188',
+	cols=tmeColors,
+	full.dn4,
+	compartment="rename",
+	phenotype="CD4_1",
+	phenotype.column.toShape="rename")
+  print(c10)
+  
+   ## case 21
+  	c21<-plotShape(path="C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/simpleModel-1-14/final-submission-folder/Box-RData/cartoons/cartoon-shapeFiles/final-shapes/",
+          ROI='3966',
+	cols=tmeColors,
+	full.dn4,
+	compartment="rename",
+	phenotype="CD4_1",
+	phenotype.column.toShape="rename")
+  print(c21)
+  
+  
+	c30<-plotShape(path="C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/simpleModel-1-14/final-submission-folder/Box-RData/cartoons/cartoon-shapeFiles/final-shapes/",
+          ROI='4183',
+	cols=tmeColors,
+	full.dn4,
+	compartment="rename",
+	phenotype="CD4_1",
+	phenotype.column.toShape="rename")
+  print(c30)
+  
+   save(c10,file="C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/blood-revisions-5-1-21/final-figure-revision/Final-figures-Tucker/Figure1/Figure1C_Case10_top.RData")
+   save(c21,file="C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/blood-revisions-5-1-21/final-figure-revision/Final-figures-Tucker/Figure1/Figure1C_Case21_mid.RData")
+   save(c30,file="C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/blood-revisions-5-1-21/final-figure-revision/Final-figures-Tucker/Figure1/Figure1C_Case30_bottom.RData")
+```
+
+
+### Unsupervised community detection on each compartment
+ For phenotype analysis, we separated the dimCD20 population.  We analyzed the CD20 bright clusters and clustered them without the dimCD20 population.  This ensures phenotype accuracy.
+ Tumor sub-cluster 11 is the dim CD20 cluster, when studying phenotypes we did not emphasize this cluster.
+```{r unfilteredClustering,eval=FALSE}
+# meta-cluster each TME population.
+
+######## unsupervised community detection.
+ ## subPhenograph the CD4.
+  full.dn4$CD4.subPhenograph<-NA
+   morphs<-mynormalize(data=full.dn4[,c("Area",
+	"Eccentricity",
+	"Solidity",
+	"Perimeter",
+	"Percent_Touching",
+	"Number_Neighbors")],percentile=0.99)
+  colnames(morphs)<-paste0(colnames(morphs),".norm")
+  full.dn4<-cbind(full.dn4,morphs)
+
+  lineage_markers<-c( "Cell_BCL2",
+                       "Cell_BCL6",
+                       "Cell_CD20",
+                       "Cell_CD206",
+                       "Cell_CD3",
+                       "Cell_CD30",
+                       "Cell_CD31",
+                       "Cell_CD4",
+                       "Cell_CD45RA",
+                       "Cell_CD45RO",
+                       "Cell_CD68" ,
+                       "Cell_CD8",
+                       "Cell_EphrinB2",
+                       "Cell_FOXP3",
+                       "Cell_HLADR" )
+   induc<-c("Cell_C",
+            "Cell_CCR4",
+            "Cell_CD134",
+            "Cell_CXCR3",
+            "Cell_Granzym",
+            "Cell_ICOS",
+            "Cell_Ki67",
+            "Cell_Lag3",
+            "Cell_PD1",
+            "Cell_PDL1",
+            "Cell_PDL2",
+            "Cell_Tbet",
+            "Cell_Tim3",
+            "Cell_Vimentin",
+            "Cell_Vista",
+            "Cell_p",
+	"Area.norm",
+	"Eccentricity.norm",
+	"Solidity.norm",
+	"Perimeter.norm",
+	"Percent_Touching.norm",
+	"Number_Neighbors.norm")
+ ##meta cluster the CD4.
+  full.dn4<-metaClusterPhenotype(dn4=full.dn4,
+	phenotype="CD4",
+	myPheno="subType.correction",
+	markers=c(lineage_markers,induc))
+ # savePlot(file="CD4_subMeta.cluster.png")
+  ## CD8
+  full.dn4<-metaClusterPhenotype(dn4=full.dn4,
+	phenotype="CD8",
+	myPheno="subType.correction",
+	markers=c(lineage_markers,induc))
+  # savePlot(file="CD8_subMeta.cluster.png")
+  table(full.dn4$subType.correction,full.dn4$CD8_subphenograph_cluster_meta)
+ ## TREG
+  full.dn4<-metaClusterPhenotype(dn4=full.dn4,
+	phenotype="TREG",
+	myPheno="subType.correction",
+	markers=c(lineage_markers,induc))
+ # savePlot(file="TREG_subMeta.cluster.png")
+
+ table(full.dn4$subType.correction,full.dn4$TREG_subphenograph_cluster_meta)
+ ##MAC
+ full.dn4<-metaClusterPhenotype(dn4=full.dn4,
+	phenotype="Macrophage",
+	myPheno="subType.correction",
+	markers=c(lineage_markers,induc))
+  # savePlot(file="MAC_subMeta.cluster.png")
+  table(full.dn4$subType.correction,full.dn4$Macrophage_subphenograph_cluster_meta)
+
+ ## performed originally by ensuring CD20 was positively expressed.
+ ## dim(full.dn4[which(full.dn4.nof$dimCD20.filtered=='YES'),])
+  full.dn4_2<-metaClusterPhenotype(dn4=full.dn4[which(full.dn4.nof$dimCD20.filtered=='YES'),],
+	phenotype="Tumor",
+	myPheno="subType.correction",
+	markers=c(lineage_markers,induc))
+
+
+ # savePlot(file="Tumor_subMeta.cluster.png")
+
+ 
+
+
+ ##compile into 1 column unsupervised.community  
+  full.dn4$unsup.subcommunity<-as.character(full.dn4$subType.correction)
+ full.dn4$unsup.subcommunity[which(full.dn4$subType.correction=="CD4")]<-paste0("CD4_",full.dn4$CD4_subphenograph_cluster_meta[which(full.dn4$subType.correction=="CD4")])
+ ## CD8
+  full.dn4$unsup.subcommunity[which(full.dn4$subType.correction=="CD8")]<-paste0("CD8_",full.dn4$CD8_subphenograph_cluster_meta[which(full.dn4$subType.correction=="CD8")])
+ ## TREG
+ full.dn4$unsup.subcommunity[which(full.dn4$subType.correction=="TREG")]<-paste0("TREG_",full.dn4$TREG_subphenograph_cluster_meta[which(full.dn4$subType.correction=="TREG")])
+ ## MAC
+ full.dn4$unsup.subcommunity[which(full.dn4$subType.correction=="Macrophage")]<-paste0("Macrophage_",full.dn4$Macrophage_subphenograph_cluster_meta[which(full.dn4$subType.correction=="Macrophage")])
+ ## Tumor
+  full.dn4$unsup.subcommunity[which(full.dn4$subType.correction=="Tumor")]<-paste0("Tumor_",full.dn4$Tumor_subphenograph_cluster_meta[which(full.dn4$subType.correction=="Tumor")])
+  
+   full.dn4$unsup.subcommunity[which(full.dn4$subType.correction=="Endothelial")]<-paste0("Endothelial_",full.dn4$Endothelial_subphenograph_cluster_meta[which(full.dn4$subType.correction=="Endothelial")])
+
+  full.dn4$unsup.subcommunity<-factor(full.dn4$unsup.subcommunity,
+	levels=c("CD4_1",
+	       "CD4_2",
+		"CD4_3",
+		"CD4_4",
+		"CD4_5","CD4_6","CD4_7",
+	        "CD8_1","CD8_2","CD8_3","CD8_4","CD8_5","CD8_6","CD8_7",
+ 	       "Macrophage_1","Macrophage_2","Macrophage_3","Macrophage_4","Macrophage_5",
+	"Macrophage_6",
+	"TREG_1","TREG_2","TREG_3","TREG_4","TREG_5",     
+	 "TREG_6",
+	 "Tumor_1","Tumor_2","Tumor_3", "Tumor_4", "Tumor_5","Tumor_6","Tumor_7",      	"Tumor_8", "Tumor_9",  "Tumor_10" ,"Tumor_11",
+	"Endothelial_1",	"Endothelial_2",	"Endothelial_3", 	"Endothelial_4", 	"Endothelial_5", 	"Endothelial_6"  ))
+
+
+ ## add in the exonic screening from CGI
+  ## need column for WES.available = YES/NO
+ full.dn4$WES.available<-"FALSE"
+ full.dn4$WES.available<-clinic$WES.avail[match(full.dn4$case,clinic$Case_ID)]
+
+  ## need the column key for the USCIDs which match the clinical mutational panel ID.
+ full.dn4$MB<-clinic$MB[match(full.dn4$case,clinic$Case_ID)]
+
+ ## add all the mutation information from the clinical sheet.
+ ### TP53
+   full.dn4$TP53<-clinic$TP53[match(full.dn4$case,clinic$Case_ID)]
+   full.dn4$BCL2<-clinic$BCL2[match(full.dn4$case,clinic$Case_ID)]
+   full.dn4$BCL6<-clinic$BCL6[match(full.dn4$case,clinic$Case_ID)]
+   full.dn4$CD79B<-clinic$CD79B[match(full.dn4$case,clinic$Case_ID)]
+     full.dn4$SGK1<-clinic$SGK1[match(full.dn4$case,clinic$Case_ID)]
+    full.dn4$MYD88.L265P<-clinic$MYD88.L265P[match(full.dn4$case,clinic$Case_ID)]
+   full.dn4$MYC<-clinic$MYC[match(full.dn4$case,clinic$Case_ID)]
+   full.dn4$NOTCH1<-clinic$NOTCH1[match(full.dn4$case,clinic$Case_ID)]
+   full.dn4$NOTCH2<-clinic$NOTCH2[match(full.dn4$case,clinic$Case_ID)]
+   full.dn4$EZH2<-clinic$EZH2[match(full.dn4$case,clinic$Case_ID)]
+
+  ## add in the IPI class
+    full.dn4$IPI<-clinic$ipi[match(full.dn4$case,clinic$Case_ID)]
+
+ ## add in 9p24 status
+  clinic$X9p24.indicator<-ifelse(clinic$X9p24.gain.status!=0,1,0)
+   clinic$X9p24.indicator[which(is.na(clinic$X9p24.indicator))]<-0
+
+     full.dn4$X9p24.indicator<-clinic$X9p24.indicator[match(full.dn4$case,clinic$Case_ID)]
+
+ # save(full.dn4,file="~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.appended.un.filtered.RData")
+
+
+
+   plot_clustering_heatmap_wrapper(expr=full.dn4[,c(lineage_markers,induc)], 
+  cell_clustering=full.dn4[,"unsup.subcommunity"], useMedians=TRUE,useQuantiles=FALSE,
+color_clusters=NULL)
+ #  savePlot(file="subcommunities.png")
+ ##### end of the meta-clustering of the sub-types.
+
+
+
+```
+
+### Comparing macrophage proportions GCB vs NGCB
+Monette, et.al (Ken Young) identified ABC had increased densities of MAC in ABC vs. GCB.
+```{r macGCB,eval=TRUE}
+
+
+ #load(file="~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.appended.un.filtered.RData")
+ load("C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/monirath/myData/revision-comments-11-6/full.dn4.subType.corrected.mutation.tsne.CD20dim.appended.un.filtered.RData")
+  library(magrittr)
+
+ x<-table(full.dn4$ROIID,full.dn4$subType.correction)%>%as.data.frame.matrix
+ x<-x[,which(colnames(x)!='none')]
+ x<-100*x/rowSums(x)
+ x$COO<-full.dn4$COO[match(rownames(x),full.dn4$ROIID)]
+
+ x2<-table(full.dn4$ROIID,full.dn4$subType.correction)%>%as.data.frame.matrix
+ x2<-x2[,which(colnames(x2)!='none')]
+ x2<-x2/rowSums(x2)
+ x2$COO<-full.dn4$COO[match(rownames(x2),full.dn4$ROIID)]
+ 
+   abundResults<-c()
+ for(p in colnames(x)[which(colnames(x)!='COO')]){
+  d<-abundanceTest(p,x,y="COO")
+  abundResults<-rbind(abundResults,d)
+ }
+
+  colnames(abundResults)[1:3]<-c("lower","upper",'estimate')
+  #abundResults$label<-label$label[match(abundResults$phenotype,label$easyLabel)]
+  abundResults$response<-rep(c("CR","Primary refract"),nrow(abundResults)/2)
+
+ #abundResults$label<-factor(abundResults$label,levels=abundResults[order(abundResults$estimate,decreasing=TRUE),'label']%>%unique)
+ # responderColors<-getResponderColors()[1:2]
+ #names(responderColors)<-c("CR","Primary refract")
+
+print(abundResults[which(abundResults$phenotype=='Macrophage'),])
+
+
+
+```
+
+
+
+
+### Figure1 C,D,e
+Meta-cluster 9 is dim for CD20 and negative for all other lineage markers, and is believed to likely be a tumor cell.  However in order to reduce phenotype ambiguity, we omit this cluster (9) from phenotype analysis and only study phenotype immune components that were accurately defined.
+```{r Figure1CDE,eval=TRUE}
+
+ ################ FIGURE 1C,D,E. ################################
+   library(dplyr)
+   library(magrittr)
+   library(ComplexHeatmap)
+library(ggplot2)
+ #  load("~/DLBCL/expr2.subPhenotyped.revised.RData")
+ #load("~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.filtered.RData")
+ ## load the full IMC experiment
+ #load(file="~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.appended.un.filtered.RData")
+ load("C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/monirath/myData/revision-comments-11-6/full.dn4.subType.corrected.mutation.tsne.CD20dim.appended.un.filtered.RData")
+
+  ## only examine phenotype accurate cluster
+  full.dn4<-full.dn4[which(full.dn4$dimCD20.filtered!='YES'),]
+   
+  #source("~/Documents/imageAnalysis/Ansell/cluster-phenograph-analysis/clusterFunctions.R")
+  #enum<-readRDS("~/DLBCL/enumeration.large.april8.rds")
+  options(stringsAsFactors=FALSE)
+
+   #clinic<-read.csv("~/Documents/imageAnalysis/DLBCL/monirath/myData/USC_CGI_DLBCL_Data_Final.csv",header=T)
+ clinic<-mutationClinicalSheetAssembly(mutationsToGather=c("TP53","BCL2","BCL6","CD79B","SGK1","MYD88","MYC","NOTCH1","NOTCH2","EZH2"))
+  clinic$Case_ID<-factor(clinic$Case_ID,levels=unique(clinic$Case_ID))
+
+ ##total proportions.
+  100*table(full.dn4$subType.correction)%>%prop.table
+  
+####
+ ratio<- full.dn4%>%group_by(case,immune.status)%>%summarise(count=n()) %>%data.frame
+    rat<-c()
+  for(roi in unique(ratio$case)){
+  x<-round(100*ratio[which(ratio$case==roi & ratio$immune.status=="immune"),"count"]/sum(ratio[which(ratio$case==roi) ,"count"]),2)
+  rat<-c(rat, x)
+  }
+  rat<-data.frame(ratio=rat,case=unique(ratio$case),row.names=unique(ratio$case))
+
+  rat$label<-gsub("_"," ",rownames(rat))
+  rat<-rat[order(rat$ratio,decreasing=TRUE),]
+   rat$label<-factor(rat$label,levels=rat$label)
+  # write.csv(rat,file="~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/ratioPlot.immune.infiltrate.csv")
+
+   ratioPlot<-ggplot(rat,aes(y=ratio,x=label))+geom_bar(stat='identity')+coord_flip()+ylab("Immune absolute proportion (%)")+xlab("Case")+theme_bw(base_size=14)
+   print( ratioPlot)
+  # save(ratioPlot,file="C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/blood-revisions-5-1-21/final-figure-revision/Final-figures-Tucker/Figure1/Figure1C_bar.RData")
+
+#####
+
+
+
+    immune<-full.dn4
+   immune<-immune[which(immune$subType.correction!="Tumor" & immune$subType.correction!="Dendritic.Cell" & immune$subType.correction!="Endothelial"),]
+   immune$cell.type.new<-immune$subType.correction
+   immune$rename<-as.character(immune$subType.correction)
+   immune$rename<-gsub("CD8","T cytotoxic",immune$rename)
+    immune$rename<-gsub("CD4","T Helper",immune$rename)
+    immune$rename<-gsub("TREG","FOXP3 T REG",immune$rename)
+    immune$rename<-gsub("Macrophage","CD68 Macrophage",immune$rename)     
+
+  
+   cellType<-data.frame(type=c("CD8","CD4","TREG","Macrophage"),stringsAsFactors=FALSE)
+   cellType$color<-c("green","blue","purple","magenta")
+   cellType$name<-c("T cytotoxic","T Helper","FOXP3 T REG","CD68 Macrophage")
+
+  
+     roiSum<-immune%>%group_by(case,rename)%>%summarise(count=n())%>%mutate(freq=count/sum(count))%>%data.frame
+      roiSum$color<-cellType$color[match(roiSum$rename,cellType$name)]
+      roiSum$rename<-factor(roiSum$rename,levels=cellType$name)
+      rownames(roiSum)<-seq(1,nrow(roiSum))
+
+  roiSum$case<-as.character(roiSum$case)
+  roiSum$case<-gsub("_"," ",roiSum$case)
+
+  roiSum$case<-factor(roiSum$case, levels=gsub("_"," ",rownames(rat)))
+
+    colnames(roiSum)<-c("case","Phenotype","count","proportion","color")
+  finalStack<-ggplot(roiSum,aes(y=proportion,x=case,fill=Phenotype))+geom_bar(stat='identity')+coord_flip()+scale_fill_manual(values=cellType$color )+theme_bw()
+  ##FIGURE 1D 
+  print(finalStack)
+  # save(finalStack,file="C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/blood-revisions-5-1-21/final-figure-revision/Final-figures-Tucker/Figure1/Figure1D_bar.RData")
+
+  ### Figure 1E  
+    finalStack_TH<-ggplot(roiSum[which(roiSum$Phenotype=="T Helper"),],aes(y=proportion,x=case,fill=Phenotype))+geom_bar(stat='identity')+coord_flip()+scale_fill_manual(values='blue' )+theme_bw()
+  ##FIGURE 1D 
+  print(finalStack_TH)
+   save(finalStack_TH,file="C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/blood-revisions-5-1-21/final-figure-revision/Final-figures-Tucker/Figure1/Figure1E_bar.RData")
+## Figure 1F
+     finalStack_MAC<-ggplot(roiSum[which(roiSum$Phenotype=="CD68 Macrophage"),],aes(y=proportion,x=case,fill=Phenotype))+geom_bar(stat='identity')+coord_flip()+scale_fill_manual(values='magenta' )+theme_bw()
+  ##FIGURE 1D 
+  print(finalStack_MAC)
+   save(finalStack_MAC,file="C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/blood-revisions-5-1-21/final-figure-revision/Final-figures-Tucker/Figure1/Figure1F_bar.RData")
+
+
+
+   
+# ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure1-lowCD20-revision/immune.proportions.adjusted.finalRevised.png")
+
+
+   ###multivariate association
+   rat$case<-gsub("_"," ",rownames(rat))
+   fullRat<-left_join(rat,roiSum[which(roiSum$Phenotype=='CD68 Macrophage'),c('case','proportion')],by='case')
+   fullRat<-left_join(fullRat,roiSum[which(roiSum$Phenotype=='FOXP3 T REG'),c('case','proportion')],by='case')
+   fullRat<-left_join(fullRat,roiSum[which(roiSum$Phenotype=='T Helper'),c('case','proportion')],by='case')
+   fullRat<-left_join(fullRat,roiSum[which(roiSum$Phenotype=='T cytotoxic'),c('case','proportion')],by='case')
+ colnames(fullRat)<-c("ratio","case","label","CD68","TREG","CD4","CD8")
+
+ ## comparing multivariate to MACs
+ lm(ratio~CD4+TREG+CD8,fullRat)%>%summary
+
+ mult<-lm(ratio~CD4+TREG+CD8,fullRat)%>%confint%>%data.frame
+ mult<-cbind(mult, lm(ratio~CD4+TREG+CD8,fullRat)%>%coef)
+ colnames(mult)<-c("X2.5","X97.5","Estimate")
+  mult$TME<-c("MAC","CD4","TREG","CD8")
+ library(hrbrthemes)
+ ggplot(mult,aes(x=TME,y=Estimate))+geom_errorbar(aes(ymin=X2.5,ymax=X97.5))+geom_point()+geom_hline(yintercept=0,linetype='dashed',color='red')+theme_ipsum(base_family='Arial')+ylab("Immune absolute proportion rate of change (%)")+ggtitle("% explained by major TME")+theme(axis.text.x=element_text(size=18),axis.text.y=element_text(size=18)) 
+# ggsave("~/Documents/imageAnalysis/DLBCL/simpleModel-1-14/Figure1-lowCD20-revision/immune.proportions.Multivariate.regression.png")
+
+
+ ### Figure 1G
+ ggplot(fullRat,aes(x=CD4,y=CD68))+geom_point()+geom_smooth(method='lm')+theme_bw()
+  f1g<- ggplot(fullRat,aes(x=CD4,y=CD68))+geom_point()+geom_smooth(method='lm')+theme_bw()
+     save(f1g,file="C:/Users/UOSC/Documents/IMC-Ranalysis/DLBCL/blood-revisions-5-1-21/final-figure-revision/Final-figures-Tucker/Figure1/Figure1G_lm.RData")
+
+
+
+```
+
+# TME Proportion association with Chapuy clusters (beta regression)
+- 1-18 performed beta regression on TME proportions association with C1-C5, COO, IPI
+- observed TME associations with molecular groups.
+- we perform beta regression on TME proportions on a multivariate model with C1-C5, COO, IPI to identify how the TME changes.  
+```{r}
+
+ ##CHAPUY REVISION : 10-15 extending all the chapuy mutations.
+  c1<-c("BCL6","BCL10","TNFAIP3","UBE2A","CD70","B2M","NOTCH2","TMEM30A","FAS","TP63","ZEB2","HLAB","SPEN","PDL1")
+  c1.rank<-c(1,2,3,4,5,6,7,8,9,11,12,13,14,15)
+  c1.dataFrame<-data.frame(gene=c1,Rank=c1.rank,cluster='C1',contained=FALSE)
+  c2<-c("TP53")
+  c2.rank<-1
+  c2.dataFrame<-data.frame(gene=c2,Rank=c2.rank,cluster='C2',contained=FALSE)
+
+  c3<-c("BCL2","CREBBP","EZH2","KMT2D","TNFRSF14","HVCN1","IRF8","GNA13","MEF2B","PTEN")
+  c3.rank<-c(seq(1,length(c3)))
+  c3.dataFrame<-data.frame(gene=c3,Rank=c3.rank,cluster='C3',contained=FALSE)
+
+  c4<-c("SGK1","HIST1H1E","NFKBIE","BRAF","CD83","NFKBIA","CD58","HIST1H2BC","STAT3","HIST1H1C","ZFP36L1","KLHL6","HIST1H1D","HIST1H1B","ETS1","TOX","HIST1H2AM","HIST1H2BK","RHOA","ACTB","LTB","SF3B1","CARD11","HIST1H2AC")
+  c4.rank<-seq(1,length(c4))
+    c4.dataFrame<-data.frame(gene=c4,Rank=c4.rank,cluster='C4',contained=FALSE)
+
+  c5<-c("CD79B","MYD88","ETV6","PIM1","TBL1XR1","GRHPR","ZC3H12A","HLAA","PRDM1","BTG1")
+  c5.rank<-c(3,5,6,8,10,12,13,16,17,18)
+    c5.dataFrame<-data.frame(gene=c5,Rank=c5.rank,cluster='C5',contained=FALSE)
+
+    
+##read in the mutational data.    
+     clinic<-mutationClinicalSheetAssembly(mutationsToGather=c(c1,c2,c3,c4,c5),full.dn4=full.dn4)
+      any(clinic$Run.ID%in%ndROI)
+  
+  ## Table for which mutations were found or not found.
+   #  mutations<-read.csv("~/Documents/imageAnalysis/DLBCL/monirath/myData/mutational-genomic-table/TMA CGI genomic data.csv",header=TRUE)
+mutations<-read.csv("~/IMC-Ranalysis/DLBCL/monirath/myData/mutational-genomic-table/TMA CGI genomic data.csv")
+  
+c1.dataFrame[c1.dataFrame$gene%in%unique(mutations[,8]),'contained']<-TRUE
+c2.dataFrame[c2.dataFrame$gene%in%unique(mutations[,8]),'contained']<-TRUE
+c3.dataFrame[c3.dataFrame$gene%in%unique(mutations[,8]),'contained']<-TRUE
+c4.dataFrame[c4.dataFrame$gene%in%unique(mutations[,8]),'contained']<-TRUE
+c5.dataFrame[c5.dataFrame$gene%in%unique(mutations[,8]),'contained']<-TRUE
+clusterData<-rbind(c1.dataFrame,c2.dataFrame,c3.dataFrame,c4.dataFrame,c5.dataFrame)
+
+   ## REVISION 10-20 hans mutation association with C1-C5.
+ ### HANS association with each mutation class logistic regression. 
+ clinic$C1.count<-rowSums(clinic[,colnames(clinic)%in%c1])
+ clinic$C2.count<-(clinic[,colnames(clinic)%in%c2])
+ clinic$C3.count<-rowSums(clinic[,colnames(clinic)%in%c3])
+ clinic$C4.count<-rowSums(clinic[,colnames(clinic)%in%c4])
+ clinic$C5.count<-rowSums(clinic[,colnames(clinic)%in%c5])
+ ##ngcb
+ clinic$NGCB.bin<-ifelse(clinic$Cell.of.origin..HANS.=='NGCB',1,0)
+ clinic$Case_Number<-as.numeric(substr(clinic$Case_ID,6,7))
+##chapuy binary.
+  clinic$C1<-ifelse(clinic[,'C1.count']>0,1,0)
+  clinic$C2<-ifelse(clinic[,'C2.count']>0,1,0)
+  clinic$C3<-ifelse(clinic[,'C3.count']>0,1,0)
+  clinic$C4<-ifelse(clinic[,'C4.count']>0,1,0)
+  clinic$C5<-ifelse(clinic[,'C5.count']>0,1,0)
+
+  clinic$Treatment.Category[which(clinic$Treatment.Category=="sur+chemo")]<-"SUR+CHEMO"
+clinic$X9p24.gain.status[which(is.na(clinic$X9p24.gain.status))]<-0
+
+
+  
+     roiSum<-immune%>%group_by(case,rename)%>%summarise(count=n())%>%mutate(freq=count/sum(count))%>%data.frame
+      roiSum$color<-cellType$color[match(roiSum$rename,cellType$name)]
+      roiSum$rename<-factor(roiSum$rename,levels=cellType$name)
+      rownames(roiSum)<-seq(1,nrow(roiSum))
+
+  roiSum$case<-as.character(roiSum$case)
+  roiSum$case<-gsub("_"," ",roiSum$case)
+
+  roiSum$case<-factor(roiSum$case, levels=gsub("_"," ",rownames(rat)))
+
+    colnames(roiSum)<-c("case","Phenotype","count","proportion","color")
+
+
+  im<-as.data.frame.matrix(table(immune$case,immune$cell.type.new))
+  im<-im/rowSums(im)
+  im$C1<-clinic$C1[match(rownames(im),clinic$Case_ID)]
+  im$C2<-clinic$C2[match(rownames(im),clinic$Case_ID)]
+  im$C3<-clinic$C3[match(rownames(im),clinic$Case_ID)]
+  im$C4<-clinic$C4[match(rownames(im),clinic$Case_ID)]
+  im$C5<-clinic$C5[match(rownames(im),clinic$Case_ID)]
+  im$IPI<-ifelse(clinic$ipi[match(rownames(im),clinic$Case_ID)]>=3,1,0)
+    im$NGCB<-ifelse(clinic$Cell.of.origin..HANS.[match(rownames(im),clinic$Case_ID)]=="NGCB",1,0)
+
+betareg(Macrophage~C1+C2+C3+C4+C5+IPI+NGCB,im)%>%summary
+  betareg(CD4~C1+C2+C3+C4+C5+IPI+NGCB,im)%>%summary
+  betareg(CD4~C1+C2+C3+C4+C5+IPI+NGCB,im)%>%confint
+## odds ratio 
+betareg(CD4~C1+C2+C3+C4+C5+IPI+NGCB,im)%>%coef%>%exp
+ betareg(CD4~C1+C2+C3+C4+C5+IPI+NGCB,im)%>%confint%>%exp
+
+  
+  betareg(CD8~C1+C2+C3+C4+C5+IPI+NGCB,im)%>%summary
+  betareg(CD8~C1+C2+C3+C4+C5+IPI+NGCB,im)%>%coef%>%exp
+  betareg(CD8~C1+C2+C3+C4+C5+IPI+NGCB,im)%>%confint%>%exp
+
+
+betareg(TREG~C1+C2+C3+C4+C5+IPI+NGCB,filter(im, TREG>0))%>%summary
+betareg(TREG~C1+C2+C3+C4+C5+IPI+NGCB,filter(im, TREG>0))%>%coef%>%exp
+betareg(TREG~C1+C2+C3+C4+C5+IPI+NGCB,filter(im, TREG>0))%>%confint%>%exp
+
+
+```
+### PCA and Batch/Entropy analysis
+ This reproduces supplementary Figure 1C.
+```{r batchAnalysis,eval=TRUE}
+ library(gridExtra)
+ load("~/Documents/imageAnalysis/DLBCL/monirath/myData/revision-comments-11-6/survival-analysis-morphological-variants/PDL1-neighborhood-analysis/workingDir/re-phenotype/full.dn4.subType.corrected.mutation.tsne.CD20dim.filtered.RData")
+
+ data<-as.data.frame.matrix(table(full.dn4$ROIID,full.dn4$subType.correction2))
+ data<- asinh(data)
+  pcs<-prcomp((data))
+  
+   PCi<-data.frame(pcs$x,ROIID=rownames(pcs$x))
+  PCi$TMA<-full.dn4$TMA[match(PCi$ROIID,full.dn4$ROIID)]
+   PCi$case<-full.dn4$case[match(PCi$ROIID,full.dn4$ROIID)]
+  varz<-100*round(pcs$sdev/sum(pcs$sdev),3)
+ EBV.pca<- ggplot(PCi,aes(x=PC1,y=PC2,col=case,label=case))+
+	geom_point(size=6)+xlim(c( min(PCi$PC1)-0.05,  max(PCi$PC1)+0.05))+
+	theme_classic()+
+	xlab(paste0("PC1 (",varz[1],"%)"))+ylab(paste0("PC2 (",varz[2],"%)"))+
+  geom_text(aes(label=case),hjust=1.2, vjust=0)+ggtitle("99th Percentile Norm")
+ print(EBV.pca)
+
+  EBV.pca2<- ggplot(PCi,aes(x=PC1,y=PC2,col=TMA,label=case))+
+	geom_point(size=6)+xlim(c( min(PCi$PC1)-0.05,  max(PCi$PC1)+0.05))+
+	theme_classic()+
+	xlab(paste0("PC1 (",varz[1],"%)"))+ylab(paste0("PC2 (",varz[2],"%)"))+
+  geom_text(aes(label=case),hjust=1.2, vjust=0)+ggtitle("99th Percentile Norm")
+ print(EBV.pca2)
+ grid.arrange(EBV.pca,EBV.pca2,nrow=2)
+ EBV.pca+facet_wrap(~case)
+   EBV.pca+facet_wrap(~case)
+  # ggsave("PCA.case.ROI.level.png")
+   EBV.pca2
+ # ggsave("PCA.TMA.heterogeneity.png")
+
+
+ library(entropy)
+  ### Compute Entropy.
+  ## for inter-core heterogeneity, compute the Kullback-Leibler divergence of given ROI to the case average.
+   data<-as.data.frame.matrix( table(full.dn4$ROIID,full.dn4$subType.correction2))
+  data<-data/rowSums(data) 
+  data$case<-full.dn4$case[match(rownames(data),full.dn4$ROIID)]
+
+  KLdata<-c()
+  for(i in c("Case_17","Case_18","Case_21","Case_26","Case_27","Case_30","Case_31")){
+   d<-subset(data,data$case==i)
+  y1<-d[1,which(colnames(d)!="case")]
+  y2<-d[2,which(colnames(d)!="case")]
+  y3<-y2
+  if(nrow(d)==3){
+  y3<-d[3,which(colnames(d)!="case")]
+  }
+  yavg<-d%>%group_by(case)%>%summarise_all(funs(mean))%>%data.frame
+  yavg<-yavg[,-1]
+  kl1<- KL.empirical(y1, yavg, unit=c("log2"))
+  hp.avg<-entropy.plugin(as.numeric(yavg))
+  kl2<-KL.empirical(y2, yavg, unit=c("log2"))
+  kl3<-kl2
+    if(nrow(d)==3){
+   kl3<-KL.empirical(y3, yavg, unit=c("log2"))
+  }
+  kldata<-data.frame(KL1=kl1,KL2=kl2,KL3=kl3,HP=hp.avg,
+	entropy1=kl1/hp.avg,
+	entropy2=kl2/hp.avg,
+	entropy3=kl3/hp.avg,row.names=i)
+  KLdata<-rbind(KLdata,kldata)
+  }
+
+  klmeans<-data.frame(KL=rowMeans(KLdata[,c(1:3)]))
+  klmeans$case<-rownames(klmeans)
+ ggplot(klmeans,aes(x=case,y=KL))+geom_point()+theme_bw(base_size=14)
+ #  ggsave("KL-divergence.scores.png")
+
+```
+
+
+
+
+
+
+
